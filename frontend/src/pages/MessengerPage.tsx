@@ -1,9 +1,9 @@
-import { Check, Maximize2, MessageSquare, Mic, Minimize2, Phone, PhoneOff, Search, Send, SlidersHorizontal, Speaker, UserPlus, Users, Video, X } from "lucide-react";
+import { Check, FileUp, Image, Laugh, Maximize2, MessageSquare, Mic, Minimize2, Paperclip, Phone, PhoneOff, Search, Send, SlidersHorizontal, Speaker, Square, UserPlus, Users, Video, X } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { API_URL, WS_URL } from "../api/client";
 import { chatApi, friendApi, userApi } from "../api/services";
 import { useAuthStore } from "../stores/authStore";
-import type { CallLog, Conversation, Friend, FriendRequest, Message, User } from "../types";
+import type { CallLog, Conversation, Friend, FriendRequest, Message, UploadedAttachment, User } from "../types";
 import { RingtonePlayer } from "../utils/ringtone";
 import { WebRTCClient } from "../utils/webrtc";
 
@@ -21,7 +21,7 @@ type CallEvent =
   | { type: "webrtc:ice"; from_user_id: number; candidate: RTCIceCandidateInit };
 
 function normalizeMessage(message: Message): Message {
-  return { ...message, read_by: Array.isArray(message.read_by) ? message.read_by : [] };
+  return { ...message, message_type: message.message_type ?? "text", read_by: Array.isArray(message.read_by) ? message.read_by : [] };
 }
 
 function includesNumber(values: unknown, value: number): boolean {
@@ -54,6 +54,12 @@ function callEventText(body: string): string {
 function messagePreview(message?: Message, currentUserId?: number): string {
   if (!message) return "No messages yet";
   if (isCallEvent(message)) return callEventText(message.body);
+  if (message.message_type === "image") return `${message.sender_id === currentUserId ? "You: " : ""}Photo`;
+  if (message.message_type === "audio") return `${message.sender_id === currentUserId ? "You: " : ""}Voice message`;
+  if (message.message_type === "video") return `${message.sender_id === currentUserId ? "You: " : ""}Video message`;
+  if (message.message_type === "file") return `${message.sender_id === currentUserId ? "You: " : ""}${message.attachment_name ?? "Attachment"}`;
+  if (message.message_type === "sticker") return `${message.sender_id === currentUserId ? "You: " : ""}Sticker`;
+  if (message.message_type === "gif") return `${message.sender_id === currentUserId ? "You: " : ""}GIF`;
   return `${message.sender_id === currentUserId ? "You: " : ""}${message.body}`;
 }
 
@@ -74,8 +80,12 @@ export function MessengerPage() {
   const [results, setResults] = useState<User[]>([]);
   const [searchError, setSearchError] = useState("");
   const [activeView, setActiveView] = useState<"chat" | "people">("chat");
+  const [showEmojiPanel, setShowEmojiPanel] = useState(false);
   const [showMobileDevices, setShowMobileDevices] = useState(false);
   const [typingUserId, setTypingUserId] = useState<number | null>(null);
+  const [composerError, setComposerError] = useState("");
+  const [uploading, setUploading] = useState(false);
+  const [recordingKind, setRecordingKind] = useState<"audio" | "video" | null>(null);
   const [activeCall, setActiveCall] = useState<CallLog | null>(null);
   const [callError, setCallError] = useState("");
   const [callMinimized, setCallMinimized] = useState(false);
@@ -97,9 +107,13 @@ export function MessengerPage() {
   const localVideo = useRef<HTMLVideoElement | null>(null);
   const remoteVideo = useRef<HTMLVideoElement | null>(null);
   const remoteAudio = useRef<HTMLAudioElement | null>(null);
+  const fileInput = useRef<HTMLInputElement | null>(null);
+  const mediaInput = useRef<HTMLInputElement | null>(null);
   const messagesContainer = useRef<HTMLDivElement | null>(null);
   const messagesEnd = useRef<HTMLDivElement | null>(null);
   const typingTimer = useRef<number | null>(null);
+  const recorder = useRef<MediaRecorder | null>(null);
+  const recordedChunks = useRef<Blob[]>([]);
   const audioOutputIdRef = useRef(audioOutputId);
   const activeCallRef = useRef<CallLog | null>(activeCall);
   const localStreamRef = useRef<MediaStream | null>(localStream);
@@ -119,6 +133,9 @@ export function MessengerPage() {
     () => new Set(requests.filter((request) => request.receiver_id === user?.id && request.status === "pending").map((request) => request.sender_id)),
     [requests, user?.id]
   );
+  const emojiOptions = ["😀", "😂", "😍", "👍", "🙏", "🎉", "❤️", "🔥"];
+  const stickerOptions = ["🌟", "💯", "👏", "🙌"];
+  const gifOptions = ["✨ Great!", "🎊 Congrats!", "😂 LOL", "🔥 Nice!"];
   const callPeerId = activeCall ? (activeCall.caller_id === user?.id ? activeCall.callee_id : activeCall.caller_id) : null;
   const callPeer = callPeerId ? friends.find((friend) => friend.user.id === callPeerId)?.user : null;
 
@@ -212,10 +229,10 @@ export function MessengerPage() {
   };
 
   const mediaErrorMessage = (error: unknown, callType: "audio" | "video") => {
-    if (error instanceof DOMException) {
-      if (error.name === "NotFoundError") {
-        return callType === "video"
-          ? "No camera was found. Choose another camera or start an audio call."
+      if (error instanceof DOMException) {
+        if (error.name === "NotFoundError") {
+          return callType === "video"
+          ? "No camera was found. Starting with microphone only."
           : "No microphone was found. Choose another microphone and try again.";
       }
       if (error.name === "NotAllowedError") {
@@ -233,6 +250,32 @@ export function MessengerPage() {
     return false;
   };
 
+  const sendChatMessage = (payload: {
+    body: string;
+    message_type?: Message["message_type"];
+    attachment_url?: string | null;
+    attachment_name?: string | null;
+    attachment_mime?: string | null;
+    attachment_size?: number | null;
+  }) => {
+    if (!selected) return false;
+    return sendSocketPayload(chatSocket.current, {
+      type: "message",
+      conversation_id: selected.id,
+      body: payload.body,
+      message_type: payload.message_type ?? "text",
+      attachment_url: payload.attachment_url,
+      attachment_name: payload.attachment_name,
+      attachment_mime: payload.attachment_mime,
+      attachment_size: payload.attachment_size
+    });
+  };
+
+  const absoluteMediaUrl = (value?: string | null) => {
+    if (!value) return "";
+    return value.startsWith("/") ? `${API_URL}${value}` : value;
+  };
+
   const playRemoteMedia = () => {
     const media = remoteAudio.current ?? remoteVideo.current;
     media?.play().catch(() => setCallError("Remote audio is blocked. Click inside the page once, then reconnect the call."));
@@ -248,7 +291,12 @@ export function MessengerPage() {
     if (!localStreamRef.current) {
       const wantsVideo = call.call_type === "video";
       const stream = await rtc.current?.startLocal(wantsVideo, { audioInputId, videoInputId });
-      if (stream) setLocalStream(stream);
+      if (stream) {
+        setLocalStream(stream);
+        if (wantsVideo && stream.getVideoTracks().length === 0) {
+          setCallError("No camera found. Continuing with microphone only.");
+        }
+      }
     }
     await rtc.current?.acceptOffer(fromUserId, sdp);
     setPendingOffer(null);
@@ -498,14 +546,84 @@ export function MessengerPage() {
   const sendMessage = async (event: FormEvent) => {
     event.preventDefault();
     if (!selected || !body.trim()) return;
-    sendSocketPayload(chatSocket.current, { type: "message", conversation_id: selected.id, body });
+    sendChatMessage({ body: body.trim(), message_type: "text" });
     setBody("");
+    setShowEmojiPanel(false);
     scrollMessagesToBottom();
   };
 
   const sendCallEventMessage = (callType: "audio" | "video", action: "start" | "end") => {
     if (!selected) return;
-    sendSocketPayload(chatSocket.current, { type: "message", conversation_id: selected.id, body: `__call__:${callType}:${action}` });
+    sendChatMessage({ body: `__call__:${callType}:${action}`, message_type: "call" });
+  };
+
+  const sendUploadedAttachment = async (attachment: UploadedAttachment, caption = "") => {
+    if (!selected) return;
+    sendChatMessage({
+      body: caption,
+      message_type: attachment.message_type,
+      attachment_url: attachment.url,
+      attachment_name: attachment.name,
+      attachment_mime: attachment.mime,
+      attachment_size: attachment.size
+    });
+    scrollMessagesToBottom();
+  };
+
+  const uploadAndSend = async (file: File | Blob, filename: string, caption = "") => {
+    if (!selected) return;
+    setUploading(true);
+    setComposerError("");
+    try {
+      const attachment = await chatApi.uploadAttachment(selected.id, file, filename);
+      await sendUploadedAttachment(attachment, caption);
+    } catch {
+      setComposerError("Could not send attachment. Use a file up to 25MB and try again.");
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleFileSelect = (file: File | undefined) => {
+    if (!file) return;
+    uploadAndSend(file, file.name);
+  };
+
+  const sendQuickMessage = (value: string, messageType: Message["message_type"]) => {
+    sendChatMessage({ body: value, message_type: messageType });
+    setShowEmojiPanel(false);
+  };
+
+  const toggleRecording = async (kind: "audio" | "video") => {
+    if (recordingKind) {
+      recorder.current?.stop();
+      return;
+    }
+    setComposerError("");
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: kind === "video"
+      });
+      recordedChunks.current = [];
+      const mediaRecorder = new MediaRecorder(stream);
+      recorder.current = mediaRecorder;
+      setRecordingKind(kind);
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) recordedChunks.current.push(event.data);
+      };
+      mediaRecorder.onstop = () => {
+        stream.getTracks().forEach((track) => track.stop());
+        const mime = mediaRecorder.mimeType || (kind === "video" ? "video/webm" : "audio/webm");
+        const blob = new Blob(recordedChunks.current, { type: mime });
+        recorder.current = null;
+        setRecordingKind(null);
+        uploadAndSend(blob, `${kind}-message-${Date.now()}.webm`);
+      };
+      mediaRecorder.start();
+    } catch {
+      setComposerError(kind === "video" ? "Camera or microphone permission is blocked." : "Microphone permission is blocked.");
+    }
   };
 
   const startCall = async (callType: "audio" | "video") => {
@@ -515,7 +633,12 @@ export function MessengerPage() {
     try {
       await loadDevices();
       const stream = await rtc.current?.startLocal(callType === "video", { audioInputId, videoInputId });
-      if (stream) setLocalStream(stream);
+      if (stream) {
+        setLocalStream(stream);
+        if (callType === "video" && stream.getVideoTracks().length === 0) {
+          setCallError("No camera found. Continuing with microphone only.");
+        }
+      }
       if (!sendSocketPayload(callSocket.current, { type: "call:start", callee_id: peer.id, call_type: callType })) {
         setCallError("Call connection is still starting. Try again in a moment.");
         return;
@@ -548,7 +671,12 @@ export function MessengerPage() {
         await loadDevices();
         const wantsVideo = activeCall.call_type === "video";
         const stream = await rtc.current?.startLocal(wantsVideo, { audioInputId, videoInputId });
-        if (stream) setLocalStream(stream);
+        if (stream) {
+          setLocalStream(stream);
+          if (wantsVideo && stream.getVideoTracks().length === 0) {
+            setCallError("No camera found. Continuing with microphone only.");
+          }
+        }
         if (pendingOffer) {
           await rtc.current?.acceptOffer(pendingOffer.fromUserId, pendingOffer.sdp);
           setPendingOffer(null);
@@ -959,7 +1087,27 @@ export function MessengerPage() {
                 return (
                   <div key={message.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}>
                     <div className={`max-w-[78%] rounded-md px-3.5 py-2 text-sm shadow-sm ${mine ? "bg-[#6264a7] text-white" : "bg-white text-slate-900"}`}>
-                      <p>{message.body}</p>
+                      {message.message_type === "image" && message.attachment_url && (
+                        <img src={absoluteMediaUrl(message.attachment_url)} alt={message.attachment_name ?? "Image"} className="mb-2 max-h-72 rounded-md object-contain" />
+                      )}
+                      {message.message_type === "audio" && message.attachment_url && (
+                        <audio controls src={absoluteMediaUrl(message.attachment_url)} className="mb-2 max-w-full" />
+                      )}
+                      {message.message_type === "video" && message.attachment_url && (
+                        <video controls src={absoluteMediaUrl(message.attachment_url)} className="mb-2 max-h-80 max-w-full rounded-md bg-slate-950" />
+                      )}
+                      {message.message_type === "file" && message.attachment_url && (
+                        <a
+                          href={absoluteMediaUrl(message.attachment_url)}
+                          target="_blank"
+                          rel="noreferrer"
+                          className={`mb-2 flex items-center gap-2 rounded-md px-3 py-2 ${mine ? "bg-white/15 text-white" : "bg-slate-100 text-slate-800"}`}
+                        >
+                          <FileUp size={16} />
+                          <span className="truncate">{message.attachment_name ?? "Attachment"}</span>
+                        </a>
+                      )}
+                      {message.body && <p className={message.message_type === "emoji" || message.message_type === "sticker" ? "text-3xl" : ""}>{message.body}</p>}
                       <p className={`mt-1 text-[11px] ${mine ? "text-blue-100" : "text-slate-400"}`}>{mine && includesNumber(message.read_by, peer.id) ? "Read" : "Sent"}</p>
                     </div>
                   </div>
@@ -967,21 +1115,65 @@ export function MessengerPage() {
               })}
               <div ref={messagesEnd} />
             </div>
-            <form onSubmit={sendMessage} className="flex gap-2 border-t border-[#ddddec] bg-white p-3 sm:p-4">
-              <input
-                value={body}
-                onChange={(event) => {
-                  setBody(event.target.value);
-                  sendSocketPayload(chatSocket.current, { type: "typing", conversation_id: selected.id, is_typing: true });
-                  if (typingTimer.current) window.clearTimeout(typingTimer.current);
-                  typingTimer.current = window.setTimeout(() => {
-                    sendSocketPayload(chatSocket.current, { type: "typing", conversation_id: selected.id, is_typing: false });
-                  }, 900);
-                }}
-                className="min-w-0 flex-1 rounded-md border border-[#d1d1e0] bg-white px-4 py-3 outline-none focus:border-[#6264a7]"
-                placeholder="Type a new message"
-              />
-              <button className="grid h-12 w-12 place-items-center rounded-md bg-[#6264a7] text-white" title="Send"><Send size={18} /></button>
+            <form onSubmit={sendMessage} className="relative border-t border-[#ddddec] bg-white p-3 sm:p-4">
+              {showEmojiPanel && (
+                <div className="absolute bottom-[76px] left-3 z-20 w-[min(520px,calc(100vw-2rem))] rounded-lg border border-[#d1d1e0] bg-white p-3 shadow-xl">
+                  <div className="grid grid-cols-8 gap-2">
+                    {emojiOptions.map((emoji) => (
+                      <button key={emoji} type="button" onClick={() => setBody((value) => `${value}${emoji}`)} className="grid h-10 place-items-center rounded-md text-2xl hover:bg-[#ededfa]">
+                        {emoji}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {stickerOptions.map((sticker) => (
+                      <button key={sticker} type="button" onClick={() => sendQuickMessage(sticker, "sticker")} className="rounded-md bg-[#ededfa] px-3 py-2 text-2xl">
+                        {sticker}
+                      </button>
+                    ))}
+                    {gifOptions.map((gif) => (
+                      <button key={gif} type="button" onClick={() => sendQuickMessage(gif, "gif")} className="rounded-md border border-[#d1d1e0] px-3 py-2 text-sm font-medium">
+                        {gif}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {composerError && <p className="mb-2 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{composerError}</p>}
+              <input ref={fileInput} type="file" className="hidden" onChange={(event) => handleFileSelect(event.target.files?.[0])} />
+              <input ref={mediaInput} type="file" accept="image/*,video/*,audio/*" className="hidden" onChange={(event) => handleFileSelect(event.target.files?.[0])} />
+              <div className="flex gap-2">
+                <button type="button" onClick={() => setShowEmojiPanel((value) => !value)} className="grid h-12 w-10 place-items-center rounded-md text-[#464775] hover:bg-[#ededfa]" title="Emoji, GIF, sticker">
+                  <Laugh size={18} />
+                </button>
+                <button type="button" onClick={() => fileInput.current?.click()} className="grid h-12 w-10 place-items-center rounded-md text-[#464775] hover:bg-[#ededfa]" title="Attach file">
+                  <Paperclip size={18} />
+                </button>
+                <button type="button" onClick={() => mediaInput.current?.click()} className="grid h-12 w-10 place-items-center rounded-md text-[#464775] hover:bg-[#ededfa]" title="Attach media">
+                  <Image size={18} />
+                </button>
+                <button type="button" onClick={() => toggleRecording("audio")} className={`grid h-12 w-10 place-items-center rounded-md ${recordingKind === "audio" ? "bg-[#c4314b] text-white" : "text-[#464775] hover:bg-[#ededfa]"}`} title="Voice message">
+                  {recordingKind === "audio" ? <Square size={16} /> : <Mic size={18} />}
+                </button>
+                <button type="button" onClick={() => toggleRecording("video")} className={`grid h-12 w-10 place-items-center rounded-md ${recordingKind === "video" ? "bg-[#c4314b] text-white" : "text-[#464775] hover:bg-[#ededfa]"}`} title="Video message">
+                  {recordingKind === "video" ? <Square size={16} /> : <Video size={18} />}
+                </button>
+                <input
+                  value={body}
+                  onChange={(event) => {
+                    setBody(event.target.value);
+                    sendSocketPayload(chatSocket.current, { type: "typing", conversation_id: selected.id, is_typing: true });
+                    if (typingTimer.current) window.clearTimeout(typingTimer.current);
+                    typingTimer.current = window.setTimeout(() => {
+                      sendSocketPayload(chatSocket.current, { type: "typing", conversation_id: selected.id, is_typing: false });
+                    }, 900);
+                  }}
+                  className="min-w-0 flex-1 rounded-md border border-[#d1d1e0] bg-white px-4 py-3 outline-none focus:border-[#6264a7]"
+                  placeholder={uploading ? "Uploading..." : recordingKind ? "Recording..." : "Type a new message"}
+                  disabled={uploading}
+                />
+                <button className="grid h-12 w-12 place-items-center rounded-md bg-[#6264a7] text-white disabled:opacity-60" disabled={uploading || !body.trim()} title="Send"><Send size={18} /></button>
+              </div>
             </form>
           </>
         ) : (

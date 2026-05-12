@@ -4,6 +4,7 @@ from app.db.session import AsyncSessionLocal
 from app.repositories.friends import FriendRepository
 from app.services.calls import CallService
 from app.services.chat import ChatService
+from app.schemas.chat import MessageCreate
 from app.utils.serialization import jsonable_model
 from app.websocket.auth import authenticate_websocket
 from app.websocket.manager import call_manager, chat_manager
@@ -31,9 +32,17 @@ async def chat_socket(websocket: WebSocket):
             event_type = payload.get("type")
             if event_type == "message":
                 conversation_id = int(payload["conversation_id"])
-                body = str(payload["body"]).strip()
+                body = str(payload.get("body", "")).strip()
+                message_payload = MessageCreate(
+                    body=body,
+                    message_type=str(payload.get("message_type", "text")),
+                    attachment_url=payload.get("attachment_url"),
+                    attachment_name=payload.get("attachment_name"),
+                    attachment_mime=payload.get("attachment_mime"),
+                    attachment_size=payload.get("attachment_size"),
+                )
                 async with AsyncSessionLocal() as session:
-                    message = await ChatService(session).create_message(user_id, conversation_id, body)
+                    message = await ChatService(session).create_message(user_id, conversation_id, message_payload)
                     conversation = await ChatService(session).chat.get_conversation_for_user(conversation_id, user_id)
                 peer_id = conversation.user2_id if conversation.user1_id == user_id else conversation.user1_id
                 event = {"type": "message", "message": {**jsonable_model(message), "read_by": []}}

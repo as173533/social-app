@@ -45,8 +45,21 @@ export type Message = {
   conversation_id: number;
   sender_id: number;
   body: string;
+  message_type: "text" | "emoji" | "sticker" | "gif" | "file" | "image" | "audio" | "video" | "call";
+  attachment_url?: string | null;
+  attachment_name?: string | null;
+  attachment_mime?: string | null;
+  attachment_size?: number | null;
   created_at: string;
   read_by: number[];
+};
+
+export type UploadedAttachment = {
+  url: string;
+  name: string;
+  mime: string;
+  size: number;
+  message_type: Message["message_type"];
 };
 
 export type CallLog = {

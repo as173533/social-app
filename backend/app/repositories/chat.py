@@ -44,8 +44,27 @@ class ChatRepository:
         )
         return list(result.scalars().all())
 
-    async def create_message(self, conversation_id: int, sender_id: int, body: str) -> Message:
-        message = Message(conversation_id=conversation_id, sender_id=sender_id, body=body)
+    async def create_message(
+        self,
+        conversation_id: int,
+        sender_id: int,
+        body: str,
+        message_type: str = "text",
+        attachment_url: str | None = None,
+        attachment_name: str | None = None,
+        attachment_mime: str | None = None,
+        attachment_size: int | None = None,
+    ) -> Message:
+        message = Message(
+            conversation_id=conversation_id,
+            sender_id=sender_id,
+            body=body,
+            message_type=message_type,
+            attachment_url=attachment_url,
+            attachment_name=attachment_name,
+            attachment_mime=attachment_mime,
+            attachment_size=attachment_size,
+        )
         self.session.add(message)
         await self.session.flush()
         return message

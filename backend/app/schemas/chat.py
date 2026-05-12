@@ -16,7 +16,12 @@ class ConversationOut(BaseModel):
 
 
 class MessageCreate(BaseModel):
-    body: str = Field(min_length=1, max_length=5000)
+    body: str = Field(default="", max_length=5000)
+    message_type: str = Field(default="text", max_length=20)
+    attachment_url: str | None = Field(default=None, max_length=500)
+    attachment_name: str | None = Field(default=None, max_length=255)
+    attachment_mime: str | None = Field(default=None, max_length=120)
+    attachment_size: int | None = None
 
 
 class MessageOut(BaseModel):
@@ -24,6 +29,11 @@ class MessageOut(BaseModel):
     conversation_id: int
     sender_id: int
     body: str
+    message_type: str = "text"
+    attachment_url: str | None = None
+    attachment_name: str | None = None
+    attachment_mime: str | None = None
+    attachment_size: int | None = None
     created_at: datetime
     read_by: list[int] = []
 
@@ -32,3 +42,11 @@ class MessageOut(BaseModel):
 
 class MarkReadRequest(BaseModel):
     message_ids: list[int]
+
+
+class AttachmentOut(BaseModel):
+    url: str
+    name: str
+    mime: str
+    size: int
+    message_type: str

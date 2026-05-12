@@ -1,5 +1,5 @@
 import { api } from "./client";
-import type { AuthResponse, CallLog, Conversation, Friend, FriendRequest, Message, User } from "../types";
+import type { AuthResponse, CallLog, Conversation, Friend, FriendRequest, Message, UploadedAttachment, User } from "../types";
 
 export const authApi = {
   register: (data: { name: string; email: string; phone: string; password: string }) =>
@@ -34,8 +34,17 @@ export const chatApi = {
   createConversation: (peerId: number) => api.post<Conversation>(`/chat/conversations/${peerId}`).then((r) => r.data),
   messages: (conversationId: number) =>
     api.get<Message[]>(`/chat/conversations/${conversationId}/messages`).then((r) => r.data),
-  send: (conversationId: number, body: string) =>
-    api.post<Message>(`/chat/conversations/${conversationId}/messages`, { body }).then((r) => r.data),
+  send: (conversationId: number, data: Partial<Message> & { body: string }) =>
+    api.post<Message>(`/chat/conversations/${conversationId}/messages`, data).then((r) => r.data),
+  uploadAttachment: (conversationId: number, file: File | Blob, filename: string) => {
+    const data = new FormData();
+    data.append("file", file, filename);
+    return api
+      .post<UploadedAttachment>(`/chat/conversations/${conversationId}/attachments`, data, {
+        headers: { "Content-Type": "multipart/form-data" }
+      })
+      .then((r) => r.data);
+  },
   read: (conversationId: number, message_ids: number[]) =>
     api.post(`/chat/conversations/${conversationId}/read`, { message_ids })
 };

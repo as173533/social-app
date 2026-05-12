@@ -21,7 +21,15 @@ export class WebRTCClient {
       audio: devices.audioInputId ? { deviceId: { exact: devices.audioInputId } } : true,
       video: video ? (devices.videoInputId ? { deviceId: { exact: devices.videoInputId } } : true) : false
     };
-    this.localStream = await navigator.mediaDevices.getUserMedia(constraints);
+    try {
+      this.localStream = await navigator.mediaDevices.getUserMedia(constraints);
+    } catch (error) {
+      if (video && error instanceof DOMException && error.name === "NotFoundError") {
+        this.localStream = await navigator.mediaDevices.getUserMedia({ audio: constraints.audio, video: false });
+      } else {
+        throw error;
+      }
+    }
     if (this.peer) {
       const senders = this.peer.getSenders();
       for (const track of this.localStream.getTracks()) {
