@@ -24,6 +24,9 @@ class ConnectionManager:
             self.active.pop(user_id, None)
             await redis_client.delete(f"online:{user_id}")
 
+    def has_connections(self, user_id: int) -> bool:
+        return bool(self.active.get(user_id))
+
     async def heartbeat(self, user_id: int) -> None:
         await redis_client.set(f"online:{user_id}", "1", ex=90)
 

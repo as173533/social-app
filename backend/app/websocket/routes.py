@@ -81,6 +81,15 @@ async def call_socket(websocket: WebSocket):
     if user_id is None:
         return
     await call_manager.connect(user_id, websocket)
+    async with AsyncSessionLocal() as session:
+        active_calls, expired_calls = await CallService(session).sync_active_calls_for_user(user_id)
+    for call in expired_calls:
+        event = {"type": "call:state", "call": jsonable_model(call)}
+        await call_manager.send_to_user(call.caller_id, event)
+        await call_manager.send_to_user(call.callee_id, event)
+    for call in active_calls:
+        event_type = "call:ringing" if call.state == "ringing" else "call:state"
+        await call_manager.send_to_user(user_id, {"type": event_type, "call": jsonable_model(call)})
     try:
         while True:
             payload = await websocket.receive_json()
@@ -111,3 +120,10 @@ async def call_socket(websocket: WebSocket):
                     await call_manager.send_to_user(peer_id, {**payload, "from_user_id": user_id})
     except WebSocketDisconnect:
         await call_manager.disconnect(user_id, websocket)
+        if not call_manager.has_connections(user_id):
+            async with AsyncSessionLocal() as session:
+                ended_calls = await CallService(session).end_disconnected_calls_for_user(user_id)
+            for call in ended_calls:
+                event = {"type": "call:state", "call": jsonable_model(call)}
+                await call_manager.send_to_user(call.caller_id, event)
+                await call_manager.send_to_user(call.callee_id, event)

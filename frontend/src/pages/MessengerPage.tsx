@@ -83,6 +83,13 @@ function messageUnread(message: Message | undefined, currentUserId?: number): bo
   return Boolean(message && message.sender_id !== currentUserId && !includesNumber(message.read_by, currentUserId ?? 0));
 }
 
+function recorderMimeType(kind: "audio" | "video"): string {
+  const candidates = kind === "video"
+    ? ["video/webm;codecs=vp8,opus", "video/webm;codecs=vp9,opus", "video/webm"]
+    : ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus"];
+  return candidates.find((type) => MediaRecorder.isTypeSupported(type)) ?? "";
+}
+
 export function MessengerPage() {
   const { user, accessToken } = useAuthStore();
   const [friends, setFriends] = useState<Friend[]>([]);
@@ -560,6 +567,17 @@ export function MessengerPage() {
         } else {
           ringtone.current.stop();
         }
+        if (payload.type === "call:state" && payload.call.state === "accepted" && payload.call.caller_id === user?.id) {
+          const peerId = payload.call.callee_id;
+          const wantsVideo = payload.call.call_type === "video";
+          if (!localStreamRef.current) {
+            const stream = await rtc.current?.startLocal(wantsVideo, { audioInputId, videoInputId });
+            if (stream) {
+              setLocalStream(stream);
+            }
+          }
+          await rtc.current?.createOffer(peerId).catch(() => setCallError("Could not start media after the call was accepted."));
+        }
       }
       if (payload.type === "webrtc:offer") {
         if (!activeCallRef.current || closedCallIds.current.has(activeCallRef.current.id)) return;
@@ -760,7 +778,8 @@ export function MessengerPage() {
         video: kind === "video"
       });
       recordedChunks.current = [];
-      const mediaRecorder = new MediaRecorder(stream);
+      const mimeType = recorderMimeType(kind);
+      const mediaRecorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
       recorder.current = mediaRecorder;
       setRecordingKind(kind);
       if (kind === "video") {
@@ -862,9 +881,10 @@ export function MessengerPage() {
     await uploadAndSend(blob, `${kind}-message-${Date.now()}.webm`);
   };
 
-  const rerecordVideoMessage = async () => {
+  const rerecordMessage = async () => {
+    const kind = recordingPreview?.kind ?? "video";
     discardRecordingPreview();
-    await toggleRecording("video");
+    await toggleRecording(kind);
   };
 
   const toggleMicMute = () => {
@@ -886,7 +906,7 @@ export function MessengerPage() {
   };
 
   const startCallDrag = (event: React.PointerEvent<HTMLElement>) => {
-    if ((event.target as HTMLElement).closest("button")) return;
+    if ((event.target as HTMLElement).closest("button, input, select, textarea, video, audio, a")) return;
     event.currentTarget.setPointerCapture(event.pointerId);
     callDrag.current = {
       pointerId: event.pointerId,
@@ -954,10 +974,18 @@ export function MessengerPage() {
     if (state === "accepted" && peerId) {
       setCallError("");
       setCallMinimized(false);
+      const acceptedCall: CallLog = {
+        ...activeCall,
+        state: "accepted",
+        answered_at: activeCall.answered_at ?? new Date().toISOString()
+      };
+      setActiveCall(acceptedCall);
+      activeCallRef.current = acceptedCall;
+      sendSocketPayload(callSocket.current, { type: "call:state", call_id: activeCall.id, state });
       try {
         ringtone.current.stop();
         await loadDevices();
-        const wantsVideo = activeCall.call_type === "video";
+        const wantsVideo = acceptedCall.call_type === "video";
         const stream = await rtc.current?.startLocal(wantsVideo, { audioInputId, videoInputId });
         if (stream) {
           setLocalStream(stream);
@@ -971,9 +999,8 @@ export function MessengerPage() {
         } else {
           rtc.current?.ensurePeer(peerId);
         }
-        sendSocketPayload(callSocket.current, { type: "call:state", call_id: activeCall.id, state });
       } catch (error) {
-        setCallError(mediaErrorMessage(error, activeCall.call_type));
+        setCallError(mediaErrorMessage(error, acceptedCall.call_type));
       }
     }
   };
@@ -1692,6 +1719,10 @@ export function MessengerPage() {
       </aside>
       {callPanel && (
         <div
+          onPointerDown={startCallDrag}
+          onPointerMove={moveCallDrag}
+          onPointerUp={endCallDrag}
+          onPointerCancel={endCallDrag}
           className={
             activeCall?.state === "ringing" && activeCall.callee_id === user?.id
               ? "fixed bottom-16 right-4 z-50 w-[calc(100vw-2rem)] max-w-[360px]"
@@ -1708,20 +1739,38 @@ export function MessengerPage() {
         <div className="fixed inset-0 z-[90] grid place-items-center bg-slate-950/60 px-4">
           <section className="w-full max-w-lg overflow-hidden rounded-lg bg-white shadow-2xl">
             <div className="flex items-center justify-between border-b border-[#ddddec] px-4 py-3">
-              <h2 className="font-semibold">{recordingKind ? "Recording video message" : "Preview video message"}</h2>
+              <h2 className="font-semibold">
+                {recordingKind
+                  ? `Recording ${recordingPreview.kind === "audio" ? "voice" : "video"} message`
+                  : `Preview ${recordingPreview.kind === "audio" ? "voice" : "video"} message`}
+              </h2>
               <button onClick={discardRecordingPreview} className="grid h-8 w-8 place-items-center rounded-md hover:bg-slate-100" title="Close">
                 <X size={18} />
               </button>
             </div>
-            <div className="bg-slate-950">
-              {recordingPreview.stream ? (
+            <div className={recordingPreview.kind === "audio" ? "bg-white p-5" : "bg-slate-950"}>
+              {recordingPreview.kind === "audio" ? (
+                <div className="rounded-md border border-[#ddddec] bg-[#f8f8fd] p-4">
+                  <div className="mb-3 flex items-center gap-3 text-sm font-medium text-slate-700">
+                    <span className="grid h-10 w-10 place-items-center rounded-full bg-[#6264a7] text-white">
+                      <Mic size={18} />
+                    </span>
+                    Voice message
+                  </div>
+                  {recordingPreview.blob ? (
+                    <audio src={recordingPreview.url} controls className="w-full" />
+                  ) : (
+                    <p className="text-sm text-slate-500">Recording audio...</p>
+                  )}
+                </div>
+              ) : recordingPreview.stream ? (
                 <video ref={recordingPreviewVideo} muted autoPlay playsInline className="aspect-video w-full object-cover" />
               ) : (
-                <video src={recordingPreview.url} controls className="aspect-video w-full object-cover" />
+                <video key={recordingPreview.url} src={recordingPreview.url} controls playsInline className="aspect-video w-full object-cover" />
               )}
             </div>
             <div className="flex flex-wrap justify-end gap-2 p-4">
-              {recordingKind === "video" ? (
+              {recordingKind ? (
                 <button onClick={() => recorder.current?.stop()} className="flex items-center gap-2 rounded-md bg-[#c4314b] px-4 py-2 font-medium text-white">
                   <Square size={16} />Stop recording
                 </button>
@@ -1730,11 +1779,11 @@ export function MessengerPage() {
                   <button onClick={discardRecordingPreview} className="rounded-md border border-slate-300 px-4 py-2 font-medium">
                     Delete
                   </button>
-                  <button onClick={rerecordVideoMessage} className="rounded-md border border-[#6264a7] px-4 py-2 font-medium text-[#464775]">
+                  <button onClick={rerecordMessage} className="rounded-md border border-[#6264a7] px-4 py-2 font-medium text-[#464775]">
                     Re-record
                   </button>
                   <button onClick={sendRecordingPreview} className="rounded-md bg-[#6264a7] px-4 py-2 font-medium text-white">
-                    Send video
+                    Send {recordingPreview.kind === "audio" ? "voice" : "video"}
                   </button>
                 </>
               )}

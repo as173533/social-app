@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.call import CallLog
@@ -34,6 +34,19 @@ class CallRepository:
             call.ended_at = now
         await self.session.flush()
         return call
+
+    async def list_active_for_user(self, user_id: int) -> list[CallLog]:
+        result = await self.session.execute(
+            select(CallLog)
+            .where(
+                and_(
+                    or_(CallLog.caller_id == user_id, CallLog.callee_id == user_id),
+                    CallLog.state.in_(("ringing", "accepted")),
+                )
+            )
+            .order_by(CallLog.started_at.desc())
+        )
+        return list(result.scalars().all())
 
     async def list_for_user(self, user_id: int) -> list[CallLog]:
         result = await self.session.execute(
