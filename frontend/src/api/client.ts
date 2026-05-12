@@ -1,8 +1,18 @@
 import axios from "axios";
 import { useAuthStore } from "../stores/authStore";
 
-export const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
-export const WS_URL = import.meta.env.VITE_WS_URL ?? "ws://localhost:8000";
+const DEFAULT_API_URL = "http://localhost:8000";
+
+function normalizeUrl(value: string | undefined, fallback: string): string {
+  return (value?.trim() || fallback).replace(/\/+$/, "");
+}
+
+function websocketUrlFromApiUrl(apiUrl: string): string {
+  return apiUrl.replace(/^https:\/\//, "wss://").replace(/^http:\/\//, "ws://");
+}
+
+export const API_URL = normalizeUrl(import.meta.env.VITE_API_URL, DEFAULT_API_URL);
+export const WS_URL = normalizeUrl(import.meta.env.VITE_WS_URL, websocketUrlFromApiUrl(API_URL));
 
 export const api = axios.create({
   baseURL: `${API_URL}/api`

@@ -10,6 +10,7 @@ export const router = createBrowserRouter([
   { path: "/", element: <Navigate to="/app" replace />, errorElement: <RouteError /> },
   { path: "/login", element: <LoginPage />, errorElement: <RouteError /> },
   { path: "/register", element: <RegisterPage />, errorElement: <RouteError /> },
+  { path: "/chat", element: <Navigate to="/app" replace />, errorElement: <RouteError /> },
   {
     path: "/app",
     errorElement: <RouteError />,
