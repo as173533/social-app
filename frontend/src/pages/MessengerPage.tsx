@@ -661,84 +661,97 @@ export function MessengerPage() {
   );
 
   const callPanel = activeCall ? (
-    <div
-      className={`rounded-lg border border-[#d1d1e0] bg-white shadow-2xl shadow-slate-900/20 ${
-        callMinimized ? "p-2" : "p-3"
-      }`}
-    >
+    <div className={callMinimized ? "rounded-lg border border-[#d1d1e0] bg-white p-2 shadow-2xl shadow-slate-900/20" : "flex h-full flex-col overflow-hidden rounded-lg border border-[#d1d1e0] bg-white shadow-2xl shadow-slate-900/25"}>
       <audio ref={remoteAudio} autoPlay />
-      <div className="flex items-center gap-3">
-        <div className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-[#6264a7] font-semibold text-white">
-          {(callPeer?.name ?? "C").slice(0, 1).toUpperCase()}
-        </div>
-        <div className="min-w-0 flex-1">
-          <h2 className="truncate font-semibold">{callPeer?.name ?? "Call"}</h2>
-          <p className="truncate text-sm text-slate-500">
-            {activeCall.state === "ringing" && activeCall.callee_id === user?.id
-              ? `Incoming ${activeCall.call_type} call`
-              : activeCall.state === "ringing"
-                ? `Calling ${activeCall.call_type}...`
-                : activeCall.state === "accepted"
-                  ? `${activeCall.call_type} call • ${formatDuration(activeCall.answered_at ?? activeCall.started_at)}`
+      <div className="flex h-12 shrink-0 items-center justify-between border-b border-[#ddddec] bg-white px-3">
+        <div className="min-w-0">
+          <h2 className="truncate text-sm font-semibold">{callPeer?.name ?? "Call"}</h2>
+          <p className="truncate text-xs text-slate-500">
+            {activeCall.state === "accepted"
+              ? `${activeCall.call_type} call - ${formatDuration(activeCall.answered_at ?? activeCall.started_at)}`
+              : activeCall.state === "ringing" && activeCall.callee_id === user?.id
+                ? `Incoming ${activeCall.call_type} call`
+                : activeCall.state === "ringing"
+                  ? "Calling..."
                   : activeCall.state}
           </p>
         </div>
-        <button
-          onClick={() => setCallMinimized((value) => !value)}
-          className="grid h-8 w-8 place-items-center rounded-md text-[#464775] hover:bg-[#ededfa]"
-          title={callMinimized ? "Restore call" : "Minimize call"}
-        >
-          {callMinimized ? <Maximize2 size={16} /> : <Minimize2 size={16} />}
-        </button>
-      </div>
-      {!callMinimized && (
-        <>
-          <div className="mt-3 grid grid-cols-3 gap-2 rounded-md bg-[#f7f7fc] p-2 text-center text-xs text-slate-600">
-            <span>
-              <span className="block font-semibold text-slate-900">{formatClockTime(activeCall.started_at)}</span>
-              Started
-            </span>
-            <span>
-              <span className="block font-semibold capitalize text-slate-900">{activeCall.state}</span>
-              Status
-            </span>
-            <span>
-              <span className="block font-semibold text-slate-900">
-                {activeCall.state === "accepted" ? formatDuration(activeCall.answered_at ?? activeCall.started_at) : "--:--"}
+        <div className="flex items-center gap-1">
+          {!callMinimized && (
+            <>
+              <span className="hidden rounded-md bg-[#f7f7fc] px-2 py-1 text-xs font-medium text-slate-600 sm:inline">
+                {formatClockTime(activeCall.started_at)}
               </span>
-              Time
-            </span>
-          </div>
-          {activeCall.state === "accepted" && activeCall.call_type === "video" && (
-            <div className="mt-3 grid grid-cols-2 gap-2">
-              <video ref={localVideo} muted autoPlay playsInline className="aspect-video min-h-16 rounded-md bg-slate-950 object-cover" />
-              <video ref={remoteVideo} autoPlay playsInline className="aspect-video min-h-16 rounded-md bg-slate-950 object-cover" />
-            </div>
-          )}
-          <div className="mt-3 flex gap-2">
-            {activeCall.state === "ringing" && activeCall.callee_id === user?.id && (
-              <button onClick={() => setCallState("accepted")} className="flex flex-1 items-center justify-center gap-2 rounded-md bg-[#13a10e] py-2.5 font-medium text-white">
-                <Phone size={16} />Accept
+              <button className="grid h-9 w-9 place-items-center rounded-md text-[#464775] hover:bg-[#ededfa]" title="Microphone">
+                <Mic size={17} />
               </button>
-            )}
-            <button onClick={() => setCallState(activeCall.state === "ringing" ? "rejected" : "ended")} className="flex flex-1 items-center justify-center gap-2 rounded-md bg-[#c4314b] py-2.5 font-medium text-white">
-              <PhoneOff size={16} />{activeCall.state === "ringing" && activeCall.callee_id === user?.id ? "Reject" : "End"}
-            </button>
-          </div>
-        </>
-      )}
-      {callMinimized && (
-        <div className="mt-2 flex items-center gap-2">
-          <span className="rounded-md bg-[#ededfa] px-2 py-1 text-xs font-semibold capitalize text-[#464775]">
-            {activeCall.state === "accepted" ? formatDuration(activeCall.answered_at ?? activeCall.started_at) : activeCall.state}
-          </span>
+              <button className="grid h-9 w-9 place-items-center rounded-md text-[#464775] hover:bg-[#ededfa]" title="Camera">
+                <Video size={17} />
+              </button>
+            </>
+          )}
+          <button
+            onClick={() => setCallMinimized((value) => !value)}
+            className="grid h-9 w-9 place-items-center rounded-md text-[#464775] hover:bg-[#ededfa]"
+            title={callMinimized ? "Restore call" : "Minimize call"}
+          >
+            {callMinimized ? <Maximize2 size={17} /> : <Minimize2 size={17} />}
+          </button>
           <button
             onClick={() => setCallState(activeCall.state === "ringing" ? "rejected" : "ended")}
-            className="grid h-8 w-8 place-items-center rounded-md bg-[#c4314b] text-white"
+            className="grid h-9 w-9 place-items-center rounded-md bg-[#c4314b] text-white hover:bg-[#a4263c]"
             title={activeCall.state === "ringing" && activeCall.callee_id === user?.id ? "Reject" : "End call"}
           >
-            <PhoneOff size={15} />
+            <PhoneOff size={17} />
           </button>
+        </div>
+      </div>
+      {callMinimized ? (
+        <button onClick={() => setCallMinimized(false)} className="mt-2 flex w-full items-center gap-3 text-left">
+          <span className="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-full bg-[#c7d5e8] text-lg font-semibold text-[#123a63]">
+            {callPeer?.avatar ? <img src={avatarSrc(callPeer.avatar)} alt={callPeer.name} className="h-full w-full object-cover" /> : (callPeer?.name ?? "C").slice(0, 1).toUpperCase()}
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-sm font-semibold">{callPeer?.name ?? "Call"}</span>
+            <span className="block truncate text-xs text-slate-500">
+              {activeCall.state === "accepted" ? formatDuration(activeCall.answered_at ?? activeCall.started_at) : activeCall.state}
+            </span>
+          </span>
+        </button>
+      ) : (
+        <div className="relative min-h-0 flex-1 overflow-hidden bg-[#f7f8fb]">
+          {activeCall.state === "accepted" && activeCall.call_type === "video" && remoteStream ? (
+            <video ref={remoteVideo} autoPlay playsInline className="h-full w-full bg-slate-950 object-cover" />
+          ) : (
+            <div className="flex h-full flex-col items-center justify-center bg-gradient-to-br from-[#f8fafc] via-[#eef6ef] to-[#e7f3f6] p-6 text-center">
+              <div className="grid h-36 w-36 place-items-center overflow-hidden rounded-full bg-[#c7d5e8] text-6xl font-semibold text-[#123a63] shadow-sm sm:h-44 sm:w-44">
+                {callPeer?.avatar ? <img src={avatarSrc(callPeer.avatar)} alt={callPeer.name} className="h-full w-full object-cover" /> : (callPeer?.name ?? "C").slice(0, 1).toUpperCase()}
+              </div>
+              <p className="mt-6 text-lg font-semibold text-slate-800">
+                {activeCall.state === "accepted" ? formatDuration(activeCall.answered_at ?? activeCall.started_at) : activeCall.callee_id === user?.id ? "Incoming call..." : "Calling..."}
+              </p>
+              <p className="mt-1 text-sm capitalize text-slate-500">{activeCall.call_type} call</p>
+            </div>
+          )}
+          <div className="absolute bottom-4 left-4 rounded-md bg-slate-900/60 px-2 py-1 text-xs font-medium text-white">
+            {callPeer?.name ?? "Call"}
+          </div>
+          <div className="absolute bottom-4 right-4 h-32 w-44 overflow-hidden rounded-lg border border-white/70 bg-[#e8f7f4] shadow-xl">
+            {activeCall.call_type === "video" && localStream ? (
+              <video ref={localVideo} muted autoPlay playsInline className="h-full w-full object-cover" />
+            ) : (
+              <div className="grid h-full place-items-center">
+                <div className="grid h-16 w-16 place-items-center overflow-hidden rounded-full bg-[#c7d5e8] text-xl font-semibold text-[#123a63]">
+                  {user?.avatar ? <img src={avatarSrc(user.avatar)} alt={user.name} className="h-full w-full object-cover" /> : (user?.name ?? "Y").slice(0, 1).toUpperCase()}
+                </div>
+              </div>
+            )}
+          </div>
+          {activeCall.state === "ringing" && activeCall.callee_id === user?.id && (
+            <button onClick={() => setCallState("accepted")} className="absolute bottom-4 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full bg-[#13a10e] px-6 py-3 font-semibold text-white shadow-lg hover:bg-[#0f7b0c]">
+              <Phone size={18} />Accept
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -1013,7 +1026,13 @@ export function MessengerPage() {
         <div className="mt-3">{deviceControls}</div>
       </aside>
       {callPanel && (
-        <div className="fixed right-4 top-20 z-50 w-[calc(100vw-2rem)] max-w-[380px] overflow-y-auto">
+        <div
+          className={
+            callMinimized
+              ? "fixed bottom-4 right-4 z-50 w-[calc(100vw-2rem)] max-w-[340px]"
+              : "fixed inset-x-3 top-16 z-50 h-[calc(100dvh-5rem)] overflow-hidden sm:inset-x-8 lg:inset-x-[11vw] xl:inset-x-[12vw]"
+          }
+        >
           {callPanel}
         </div>
       )}
