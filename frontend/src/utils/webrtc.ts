@@ -28,24 +28,30 @@ export class WebRTCClient {
 
   async startLocal(video: boolean, devices: MediaDeviceSelection = {}): Promise<MediaStream> {
     this.localStream?.getTracks().forEach((track) => track.stop());
+    const audioConstraints: MediaTrackConstraints = devices.audioInputId
+      ? { deviceId: { exact: devices.audioInputId }, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+      : { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
+    const videoConstraints: MediaTrackConstraints = {
+      ...(devices.videoInputId ? { deviceId: { exact: devices.videoInputId } } : {}),
+      width: { ideal: 640, max: 1280 },
+      height: { ideal: 360, max: 720 },
+      frameRate: { ideal: 24, max: 30 }
+    };
     const constraints: MediaStreamConstraints = {
       audio: devices.audioInputId
-        ? { deviceId: { exact: devices.audioInputId }, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
-        : { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-      video: video
-        ? {
-            ...(devices.videoInputId ? { deviceId: { exact: devices.videoInputId } } : {}),
-            width: { ideal: 640, max: 1280 },
-            height: { ideal: 360, max: 720 },
-            frameRate: { ideal: 24, max: 30 }
-          }
-        : false
+        ? audioConstraints
+        : audioConstraints,
+      video: video ? videoConstraints : false
     };
     try {
       this.localStream = await navigator.mediaDevices.getUserMedia(constraints);
     } catch (error) {
-      if (video && error instanceof DOMException && error.name === "NotFoundError") {
-        this.localStream = await navigator.mediaDevices.getUserMedia({ audio: constraints.audio, video: false });
+      if (video) {
+        try {
+          this.localStream = await navigator.mediaDevices.getUserMedia({ audio: false, video: videoConstraints });
+        } catch {
+          this.localStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: false });
+        }
       } else {
         throw error;
       }

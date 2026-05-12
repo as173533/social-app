@@ -1,4 +1,4 @@
-import { Check, FileUp, Image, Laugh, Maximize2, MessageSquare, Mic, Minimize2, MonitorUp, Paperclip, Phone, PhoneOff, RefreshCcw, Search, Send, SlidersHorizontal, Speaker, Square, UserPlus, Users, Video, X } from "lucide-react";
+import { Check, ChevronDown, FileUp, Grid2X2, Image, Laugh, Maximize2, MessageSquare, Mic, MicOff, Minimize2, MonitorUp, MoreHorizontal, Paperclip, Phone, PhoneOff, RefreshCcw, Search, Send, Shield, SlidersHorizontal, Speaker, Square, UserPlus, Users, Video, VideoOff, Volume2, X } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { API_URL, WS_URL } from "../api/client";
 import { chatApi, friendApi, userApi } from "../api/services";
@@ -97,7 +97,9 @@ export function MessengerPage() {
   const [searchError, setSearchError] = useState("");
   const [activeView, setActiveView] = useState<"chat" | "people">("chat");
   const [showEmojiPanel, setShowEmojiPanel] = useState(false);
-  const [emojiTab, setEmojiTab] = useState<"all" | "emoji" | "gifs" | "gestures" | "people" | "food" | "places" | "objects" | "symbols">("all");
+  const [emojiTab, setEmojiTab] = useState<"all" | "emoji" | "stickers" | "gifs" | "gestures" | "people" | "food" | "places" | "objects" | "symbols">("all");
+  const [showAudioMenu, setShowAudioMenu] = useState(false);
+  const [noiseSuppression, setNoiseSuppression] = useState(true);
   const [showMobileDevices, setShowMobileDevices] = useState(false);
   const [typingUserId, setTypingUserId] = useState<number | null>(null);
   const [composerError, setComposerError] = useState("");
@@ -111,6 +113,7 @@ export function MessengerPage() {
   const [callTick, setCallTick] = useState(0);
   const [micMuted, setMicMuted] = useState(false);
   const [cameraOff, setCameraOff] = useState(false);
+  const [callPosition, setCallPosition] = useState({ x: 0, y: 0 });
   const [soundReady, setSoundReady] = useState(false);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
@@ -135,6 +138,7 @@ export function MessengerPage() {
   const messagesEnd = useRef<HTMLDivElement | null>(null);
   const typingTimer = useRef<number | null>(null);
   const callTimeoutTimer = useRef<number | null>(null);
+  const callDrag = useRef<{ pointerId: number; startX: number; startY: number; originX: number; originY: number } | null>(null);
   const recorder = useRef<MediaRecorder | null>(null);
   const recordingPreviewVideo = useRef<HTMLVideoElement | null>(null);
   const recordedChunks = useRef<Blob[]>([]);
@@ -158,7 +162,7 @@ export function MessengerPage() {
     () => new Set(requests.filter((request) => request.receiver_id === user?.id && request.status === "pending").map((request) => request.sender_id)),
     [requests, user?.id]
   );
-  const emojiGroups: Record<Exclude<typeof emojiTab, "all" | "gifs">, string[]> = {
+  const emojiGroups: Record<Exclude<typeof emojiTab, "all" | "stickers" | "gifs">, string[]> = {
     emoji: ["😮", "😢", "😠", "😍", "😎", "🙌", "🤝", "🔥", "🎉", "👀", "💯", "💡", "✅", "➕", "❌", "🔜", "🚢", "🤔", "🥺", "😭", "🤭", "😌", "😇", "👻", "😳", "😋", "😱", "😐", "🙄", "🤩", "🤪", "😏", "🥳", "🤣", "🫡", "🤗"],
     gestures: ["👍", "👎", "👌", "✌️", "🤞", "🤟", "🤘", "👋", "👏", "🙌", "🙏", "💪", "🫶", "☝️", "👊", "🤙"],
     people: ["😀", "😃", "😄", "😁", "🙂", "😊", "🥰", "😘", "😜", "🤓", "😴", "😷", "🤒", "🥶", "😵", "🤯"],
@@ -168,14 +172,27 @@ export function MessengerPage() {
     symbols: ["❤️", "🧡", "💛", "💚", "💙", "💜", "🖤", "💔", "❗", "❓", "⚠️", "♻️", "🔴", "🟢", "🔵", "✔️"]
   };
   const emojiOptions = Object.values(emojiGroups).flat();
-  const stickerOptions = ["🌟", "💯", "👏", "🙌", "🚀", "✅"];
+  const stickerOptions = [
+    { label: "Star", value: "🌟", color: "bg-amber-100" },
+    { label: "Perfect", value: "💯", color: "bg-rose-100" },
+    { label: "Clap", value: "👏", color: "bg-indigo-100" },
+    { label: "Hands", value: "🙌", color: "bg-sky-100" },
+    { label: "Rocket", value: "🚀", color: "bg-purple-100" },
+    { label: "Done", value: "✅", color: "bg-emerald-100" },
+    { label: "Love", value: "❤️", color: "bg-pink-100" },
+    { label: "Fire", value: "🔥", color: "bg-orange-100" },
+    { label: "Thinking", value: "🤔", color: "bg-slate-100" }
+  ];
   const gifOptions = [
-    { label: "Deal with it", value: "😎 Deal with it" },
-    { label: "Nice", value: "🔥 Nice!" },
-    { label: "LOL", value: "😂 LOL" },
-    { label: "Congrats", value: "🎊 Congrats!" },
-    { label: "On it", value: "✅ On it" },
-    { label: "Wow", value: "😮 Wow!" }
+    { label: "Deal with it", value: "😎 Deal with it", icon: "😎" },
+    { label: "Nice", value: "🔥 Nice!", icon: "🔥" },
+    { label: "LOL", value: "😂 LOL", icon: "😂" },
+    { label: "Congrats", value: "🎊 Congrats!", icon: "🎊" },
+    { label: "On it", value: "✅ On it", icon: "✅" },
+    { label: "Wow", value: "😮 Wow!", icon: "😮" },
+    { label: "Please", value: "🙏 Please", icon: "🙏" },
+    { label: "Done", value: "💯 Done", icon: "💯" },
+    { label: "Party", value: "🥳 Party time", icon: "🥳" }
   ];
   const callPeerId = activeCall ? (activeCall.caller_id === user?.id ? activeCall.callee_id : activeCall.caller_id) : null;
   const callPeer = callPeerId ? friends.find((friend) => friend.user.id === callPeerId)?.user : null;
@@ -868,6 +885,33 @@ export function MessengerPage() {
     });
   };
 
+  const startCallDrag = (event: React.PointerEvent<HTMLElement>) => {
+    if ((event.target as HTMLElement).closest("button")) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    callDrag.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: callPosition.x,
+      originY: callPosition.y
+    };
+  };
+
+  const moveCallDrag = (event: React.PointerEvent<HTMLElement>) => {
+    const drag = callDrag.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    setCallPosition({
+      x: drag.originX + event.clientX - drag.startX,
+      y: drag.originY + event.clientY - drag.startY
+    });
+  };
+
+  const endCallDrag = (event: React.PointerEvent<HTMLElement>) => {
+    if (callDrag.current?.pointerId === event.pointerId) {
+      callDrag.current = null;
+    }
+  };
+
   const startCall = async (callType: "audio" | "video") => {
     if (!peer) return;
     setCallError("");
@@ -1036,7 +1080,15 @@ export function MessengerPage() {
     activeCall.state === "ringing" && activeCall.callee_id === user?.id ? (
     <div className="overflow-hidden rounded-lg bg-[#4a403d] text-white shadow-2xl shadow-slate-900/35">
       <div className="flex h-10 items-center justify-between px-3 text-xs">
-        <span className="font-semibold">Chat Messenger</span>
+        <span
+          onPointerDown={startCallDrag}
+          onPointerMove={moveCallDrag}
+          onPointerUp={endCallDrag}
+          onPointerCancel={endCallDrag}
+          className="cursor-move select-none font-semibold"
+        >
+          Chat Messenger
+        </span>
         <button onClick={() => setCallMinimized(true)} className="grid h-7 w-7 place-items-center rounded-md hover:bg-white/10" title="Minimize">
           <Minimize2 size={15} />
         </button>
@@ -1060,37 +1112,96 @@ export function MessengerPage() {
     ) : (
     <div className={callMinimized ? "rounded-lg border border-[#d1d1e0] bg-white p-2 shadow-2xl shadow-slate-900/20" : "flex h-full flex-col overflow-hidden rounded-lg border border-[#d1d1e0] bg-white shadow-2xl shadow-slate-900/25"}>
       <audio ref={bindRemoteAudio} autoPlay />
-      <div className="flex h-12 shrink-0 items-center justify-between border-b border-[#ddddec] bg-white px-3">
-        <div className="min-w-0">
-          <h2 className="truncate text-sm font-semibold">{callPeer?.name ?? "Call"}</h2>
-          <p className="truncate text-xs text-slate-500">
-            {activeCall.state === "accepted"
-              ? `${activeCall.call_type} call - ${formatDuration(activeCall.answered_at ?? activeCall.started_at)}`
-              : activeCall.state === "ringing" && activeCall.callee_id === user?.id
-                ? `Incoming ${activeCall.call_type} call`
-                : activeCall.state === "ringing"
-                  ? "Calling..."
-                  : activeCall.state}
-          </p>
+      <div className="flex h-16 shrink-0 items-center justify-between border-b border-[#ddddec] bg-white px-3">
+        <div
+          onPointerDown={startCallDrag}
+          onPointerMove={moveCallDrag}
+          onPointerUp={endCallDrag}
+          onPointerCancel={endCallDrag}
+          className="flex min-w-0 cursor-move select-none items-center gap-3"
+        >
+          <Shield size={19} className="text-slate-700" />
+          <span className="text-sm text-slate-700">
+            {activeCall.state === "accepted" ? formatDuration(activeCall.answered_at ?? activeCall.started_at) : "00:00"}
+          </span>
         </div>
         <div className="flex items-center gap-1">
           {!callMinimized && (
             <>
-              <span className="hidden rounded-md bg-[#f7f7fc] px-2 py-1 text-xs font-medium text-slate-600 sm:inline">
-                {formatClockTime(activeCall.started_at)}
-              </span>
-              <button onClick={toggleMicMute} className={`grid h-9 w-9 place-items-center rounded-md ${micMuted ? "bg-[#c4314b] text-white" : "text-[#464775] hover:bg-[#ededfa]"}`} title={micMuted ? "Unmute microphone" : "Mute microphone"}>
-                <Mic size={17} />
+              {[
+                { label: "Record", icon: <RefreshCcw size={18} />, action: undefined },
+                { label: "Chat", icon: <MessageSquare size={18} />, action: () => setCallMinimized(true) },
+                { label: "People", icon: <Users size={18} />, action: undefined },
+                { label: "View", icon: <Grid2X2 size={18} />, action: undefined },
+                { label: "More", icon: <MoreHorizontal size={20} />, action: undefined }
+              ].map((item) => (
+                <button key={item.label} onClick={item.action} className="hidden min-w-14 rounded-md px-2 py-1.5 text-xs text-slate-700 hover:bg-[#f3f3f8] md:grid md:place-items-center" title={item.label}>
+                  {item.icon}
+                  <span className="mt-0.5">{item.label}</span>
+                </button>
+              ))}
+              <span className="mx-1 hidden h-9 w-px bg-[#ddddec] md:block" />
+              <button onClick={toggleCameraOff} className={`min-w-14 rounded-md px-2 py-1.5 text-xs ${cameraOff ? "bg-[#f3f3f8] text-slate-400" : "text-slate-700 hover:bg-[#f3f3f8]"}`} title={cameraOff ? "Turn camera on" : "Turn camera off"}>
+                <span className="grid place-items-center">{cameraOff ? <VideoOff size={18} /> : <Video size={18} />}</span>
+                <span className="mt-0.5 block">Camera</span>
               </button>
-              <button onClick={toggleCameraOff} className={`grid h-9 w-9 place-items-center rounded-md ${cameraOff ? "bg-[#c4314b] text-white" : "text-[#464775] hover:bg-[#ededfa]"}`} title={cameraOff ? "Turn camera on" : "Turn camera off"}>
-                <Video size={17} />
+              <button onClick={switchCamera} className="hidden min-w-10 rounded-md px-2 py-1.5 text-xs text-slate-700 hover:bg-[#f3f3f8] md:grid md:place-items-center" title="Switch camera">
+                <RefreshCcw size={17} />
               </button>
-              <button onClick={switchCamera} className="grid h-9 w-9 place-items-center rounded-md text-[#464775] hover:bg-[#ededfa]" title="Switch camera">
-                <RefreshCcw size={16} />
+              <div className="relative">
+                <button onClick={toggleMicMute} className={`min-w-14 rounded-l-md px-2 py-1.5 text-xs ${micMuted ? "bg-[#f3f3f8] text-slate-400" : "text-slate-700 hover:bg-[#f3f3f8]"}`} title={micMuted ? "Unmute microphone" : "Mute microphone"}>
+                  <span className="grid place-items-center">{micMuted ? <MicOff size={18} /> : <Mic size={18} />}</span>
+                  <span className="mt-0.5 block">Mic</span>
+                </button>
+                <button onClick={() => setShowAudioMenu((value) => !value)} className="absolute right-0 top-0 grid h-full w-5 place-items-center rounded-r-md text-[#6264a7] hover:bg-[#ededfa]" title="Audio settings">
+                  <ChevronDown size={13} />
+                </button>
+                {showAudioMenu && (
+                  <div className="absolute right-0 top-14 z-[70] w-80 rounded-md border border-[#ddddec] bg-white p-4 text-left text-sm text-slate-700 shadow-2xl">
+                    <p className="mb-2 font-medium">Speaker</p>
+                    <label className="flex items-center gap-2">
+                      <input type="radio" checked readOnly />
+                      <span className="truncate">{audioOutputs.find((device) => device.deviceId === audioOutputId)?.label || "Default speaker"}</span>
+                    </label>
+                    <div className="mt-3 flex items-center gap-3">
+                      <Volume2 size={18} />
+                      <input type="range" min="0" max="100" defaultValue="70" className="w-full accent-[#6264a7]" />
+                    </div>
+                    <hr className="my-4" />
+                    <p className="mb-2 font-medium">Microphone</p>
+                    <div className="space-y-2">
+                      <label className="flex items-center gap-2">
+                        <input type="radio" checked={!audioInputId} onChange={() => setAudioInputId("")} />
+                        <span>Default microphone</span>
+                      </label>
+                      {audioInputs.slice(0, 3).map((device) => (
+                        <label key={device.deviceId} className="flex items-center gap-2">
+                          <input type="radio" checked={audioInputId === device.deviceId} onChange={() => setAudioInputId(device.deviceId)} />
+                          <span className="truncate">{device.label || "Microphone"}</span>
+                        </label>
+                      ))}
+                    </div>
+                    <div className="mt-3 flex items-center gap-1 text-slate-400">
+                      <MicOff size={17} />
+                      {Array.from({ length: 18 }).map((_, index) => <span key={index} className="h-4 w-1 rounded-full bg-slate-300" />)}
+                    </div>
+                    <hr className="my-4" />
+                    <label className="flex items-center justify-between">
+                      <span>Noise suppression</span>
+                      <button type="button" onClick={() => setNoiseSuppression((value) => !value)} className={`h-6 w-11 rounded-full p-0.5 ${noiseSuppression ? "bg-[#6264a7]" : "bg-slate-300"}`}>
+                        <span className={`block h-5 w-5 rounded-full bg-white transition ${noiseSuppression ? "translate-x-5" : ""}`} />
+                      </button>
+                    </label>
+                    <hr className="my-4" />
+                    <button type="button" className="text-left text-slate-700">More audio settings</button>
+                  </div>
+                )}
+              </div>
+              <button onClick={toggleScreenShare} className={`min-w-14 rounded-md px-2 py-1.5 text-xs ${screenSharing ? "bg-[#6264a7] text-white" : "text-slate-700 hover:bg-[#f3f3f8]"}`} title={screenSharing ? "Stop sharing" : "Share screen"}>
+                <span className="grid place-items-center"><MonitorUp size={18} /></span>
+                <span className="mt-0.5 block">Share</span>
               </button>
-              <button onClick={toggleScreenShare} className={`grid h-9 w-9 place-items-center rounded-md ${screenSharing ? "bg-[#6264a7] text-white" : "text-[#464775] hover:bg-[#ededfa]"}`} title={screenSharing ? "Stop sharing" : "Share screen"}>
-                <MonitorUp size={17} />
-              </button>
+              <span className="mx-1 hidden h-9 w-px bg-[#ddddec] md:block" />
             </>
           )}
           <button
@@ -1397,9 +1508,12 @@ export function MessengerPage() {
             </div>
             <form onSubmit={sendMessage} className="relative border-t border-[#ddddec] bg-white p-3 sm:p-4">
               {showEmojiPanel && (
-                <div className="absolute bottom-[76px] right-3 z-20 w-[min(320px,calc(100vw-2rem))] overflow-hidden rounded-lg border border-[#d1d1e0] bg-white shadow-2xl">
-                  <div className="grid grid-cols-3 border-b border-[#e6e6f2] text-sm">
-                    {(["all", "emoji", "gifs"] as const).map((tab) => (
+                <div
+                  className="absolute bottom-[76px] right-3 z-20 flex max-h-[min(72dvh,560px)] w-[min(360px,calc(100vw-2rem))] flex-col overflow-hidden rounded-lg border border-[#d1d1e0] bg-white shadow-2xl"
+                  onMouseDown={(event) => event.stopPropagation()}
+                >
+                  <div className="grid grid-cols-4 border-b border-[#e6e6f2] text-sm">
+                    {(["all", "emoji", "stickers", "gifs"] as const).map((tab) => (
                       <button
                         key={tab}
                         type="button"
@@ -1430,12 +1544,12 @@ export function MessengerPage() {
                       </button>
                     ))}
                   </div>
-                  <div className="p-3">
+                  <div className="min-h-0 overflow-y-auto p-3">
                     <div className="relative">
                       <Search className="absolute right-3 top-2.5 text-slate-400" size={16} />
                       <input className="w-full rounded-md border border-[#d1d1e0] py-2 pl-3 pr-9 text-sm outline-none focus:border-[#6264a7]" placeholder="Find something fun" />
                     </div>
-                    {emojiTab !== "gifs" && (
+                    {emojiTab !== "gifs" && emojiTab !== "stickers" && (
                       <>
                         <div className="mt-3 flex items-center justify-between text-sm">
                           <span className="font-medium text-slate-700">{emojiTab === "all" ? "Recent" : "Emoji"}</span>
@@ -1448,10 +1562,24 @@ export function MessengerPage() {
                             </button>
                           ))}
                         </div>
-                        <div className="mt-3 grid grid-cols-6 gap-2">
+                      </>
+                    )}
+                    {(emojiTab === "all" || emojiTab === "stickers") && (
+                      <>
+                        <div className="mt-3 flex items-center justify-between text-sm">
+                          <span className="font-medium text-slate-700">Stickers</span>
+                          <button type="button" onClick={() => setEmojiTab("stickers")} className="text-xs text-slate-500">See all</button>
+                        </div>
+                        <div className="mt-2 grid grid-cols-3 gap-2">
                           {stickerOptions.map((sticker) => (
-                            <button key={sticker} type="button" onClick={() => sendQuickMessage(sticker, "sticker")} className="grid h-11 place-items-center rounded-md bg-[#f1f1fb] text-2xl hover:bg-[#e4e4f6]">
-                              {sticker}
+                            <button
+                              key={sticker.label}
+                              type="button"
+                              onClick={() => sendQuickMessage(sticker.value, "sticker")}
+                              className={`grid h-20 place-items-center rounded-lg ${sticker.color} text-4xl shadow-sm hover:scale-[1.02]`}
+                              title={sticker.label}
+                            >
+                              {sticker.value}
                             </button>
                           ))}
                         </div>
@@ -1469,11 +1597,12 @@ export function MessengerPage() {
                               key={gif.value}
                               type="button"
                               onClick={() => sendQuickMessage(gif.value, "gif")}
-                              className={`grid h-20 place-items-center rounded-md p-2 text-center text-xs font-semibold text-white ${
+                              className={`grid h-24 place-items-center rounded-md p-2 text-center text-xs font-semibold text-white shadow-sm hover:scale-[1.02] ${
                                 index % 3 === 0 ? "bg-[#6264a7]" : index % 3 === 1 ? "bg-[#0f766e]" : "bg-[#c4314b]"
                               }`}
                             >
-                              {gif.label}
+                              <span className="text-3xl">{gif.icon}</span>
+                              <span>{gif.label}</span>
                             </button>
                           ))}
                         </div>
@@ -1570,6 +1699,7 @@ export function MessengerPage() {
               ? "fixed bottom-4 right-4 z-50 w-[calc(100vw-2rem)] max-w-[340px]"
               : "fixed inset-x-3 top-16 z-50 h-[calc(100dvh-5rem)] overflow-hidden sm:inset-x-8 lg:inset-x-[11vw] xl:inset-x-[12vw]"
           }
+          style={{ transform: `translate(${callPosition.x}px, ${callPosition.y}px)` }}
         >
           {callPanel}
         </div>
