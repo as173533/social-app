@@ -40,25 +40,60 @@ async def chat_socket(websocket: WebSocket):
                     attachment_name=payload.get("attachment_name"),
                     attachment_mime=payload.get("attachment_mime"),
                     attachment_size=payload.get("attachment_size"),
+                    reply_to_message_id=payload.get("reply_to_message_id"),
                 )
                 async with AsyncSessionLocal() as session:
-                    message = await ChatService(session).create_message(user_id, conversation_id, message_payload)
-                    conversation = await ChatService(session).chat.get_conversation_for_user(conversation_id, user_id)
-                peer_id = conversation.user2_id if conversation.user1_id == user_id else conversation.user1_id
-                event = {"type": "message", "message": {**jsonable_model(message), "read_by": []}}
-                await chat_manager.send_to_user(user_id, event)
-                await chat_manager.send_to_user(peer_id, event)
+                    service = ChatService(session)
+                    message = await service.create_message(user_id, conversation_id, message_payload)
+                    conversation = await service.chat.get_conversation_for_user(conversation_id, user_id)
+                    recipient_ids = await service.member_ids(conversation_id) if conversation.conversation_type == "group" else [conversation.user1_id, conversation.user2_id]
+                    reply_to = None
+                    if message.reply_to_message_id:
+                        reply = await service.chat.get_message_for_user(message.reply_to_message_id, user_id)
+                        if reply:
+                            reply_to = {
+                                "id": reply.id,
+                                "sender_id": reply.sender_id,
+                                "body": "" if reply.deleted_for_everyone_at else reply.body,
+                                "message_type": reply.message_type,
+                                "attachment_name": None if reply.deleted_for_everyone_at else reply.attachment_name,
+                            }
+                event = {"type": "message", "message": {**jsonable_model(message), "read_by": [], "deleted_for_everyone": False, "reply_to": reply_to}}
+                for recipient_id in recipient_ids:
+                    if recipient_id:
+                        await chat_manager.send_to_user(recipient_id, event)
+            elif event_type == "message:delete":
+                message_id = int(payload["message_id"])
+                scope = str(payload.get("scope", "me"))
+                async with AsyncSessionLocal() as session:
+                    service = ChatService(session)
+                    message = await service.delete_message(user_id, message_id, scope)
+                    conversation = await service.chat.get_conversation_for_user(message.conversation_id, user_id)
+                    recipient_ids = await service.member_ids(message.conversation_id) if conversation.conversation_type == "group" else [conversation.user1_id, conversation.user2_id]
+                if scope == "me":
+                    await chat_manager.send_to_user(user_id, {"type": "message:deleted", "message_id": message_id, "scope": "me"})
+                else:
+                    event = {"type": "message:deleted", "message_id": message_id, "scope": "everyone", "message": {**jsonable_model(message), "read_by": [], "deleted_for_everyone": True, "reply_to": None}}
+                    for recipient_id in recipient_ids:
+                        if recipient_id:
+                            await chat_manager.send_to_user(recipient_id, event)
             elif event_type == "typing":
                 conversation_id = int(payload["conversation_id"])
                 is_typing = bool(payload.get("is_typing", True))
                 async with AsyncSessionLocal() as session:
                     conversation = await ChatService(session).chat.get_conversation_for_user(conversation_id, user_id)
                 if conversation:
-                    peer_id = conversation.user2_id if conversation.user1_id == user_id else conversation.user1_id
-                    await chat_manager.send_to_user(
-                        peer_id,
-                        {"type": "typing", "conversation_id": conversation_id, "user_id": user_id, "is_typing": is_typing},
-                    )
+                    if conversation.conversation_type == "group":
+                        async with AsyncSessionLocal() as session:
+                            recipient_ids = await ChatService(session).member_ids(conversation_id)
+                    else:
+                        recipient_ids = [conversation.user2_id if conversation.user1_id == user_id else conversation.user1_id]
+                    for recipient_id in recipient_ids:
+                        if recipient_id and recipient_id != user_id:
+                            await chat_manager.send_to_user(
+                                recipient_id,
+                                {"type": "typing", "conversation_id": conversation_id, "user_id": user_id, "is_typing": is_typing},
+                            )
             elif event_type == "read":
                 conversation_id = int(payload["conversation_id"])
                 message_ids = [int(message_id) for message_id in payload.get("message_ids", [])]
@@ -66,10 +101,15 @@ async def chat_socket(websocket: WebSocket):
                     await ChatService(session).mark_read(user_id, conversation_id, message_ids)
                     conversation = await ChatService(session).chat.get_conversation_for_user(conversation_id, user_id)
                 if conversation:
-                    peer_id = conversation.user2_id if conversation.user1_id == user_id else conversation.user1_id
+                    if conversation.conversation_type == "group":
+                        async with AsyncSessionLocal() as session:
+                            recipient_ids = await ChatService(session).member_ids(conversation_id)
+                    else:
+                        recipient_ids = [conversation.user1_id, conversation.user2_id]
                     event = {"type": "read", "conversation_id": conversation_id, "user_id": user_id, "message_ids": message_ids}
-                    await chat_manager.send_to_user(user_id, event)
-                    await chat_manager.send_to_user(peer_id, event)
+                    for recipient_id in recipient_ids:
+                        if recipient_id:
+                            await chat_manager.send_to_user(recipient_id, event)
     except WebSocketDisconnect:
         await chat_manager.disconnect(user_id, websocket)
         await chat_manager.broadcast_presence(user_id, False, await friend_ids_for(user_id))

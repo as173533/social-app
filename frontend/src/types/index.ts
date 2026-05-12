@@ -35,9 +35,23 @@ export type Friend = {
 export type Conversation = {
   id: number;
   user1_id: number;
-  user2_id: number;
+  user2_id: number | null;
+  conversation_type?: "direct" | "group";
+  title?: string | null;
+  avatar?: string | null;
+  owner_id?: number | null;
   created_at: string;
   peer?: User | null;
+  members?: User[];
+  role?: "owner" | "member" | null;
+};
+
+export type MessageReply = {
+  id: number;
+  sender_id: number;
+  body: string;
+  message_type: Message["message_type"];
+  attachment_name?: string | null;
 };
 
 export type Message = {
@@ -50,6 +64,9 @@ export type Message = {
   attachment_name?: string | null;
   attachment_mime?: string | null;
   attachment_size?: number | null;
+  reply_to_message_id?: number | null;
+  reply_to?: MessageReply | null;
+  deleted_for_everyone?: boolean;
   created_at: string;
   read_by: number[];
 };

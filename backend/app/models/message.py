@@ -18,6 +18,8 @@ class Message(Base):
     attachment_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     attachment_mime: Mapped[str | None] = mapped_column(String(120), nullable=True)
     attachment_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    reply_to_message_id: Mapped[int | None] = mapped_column(ForeignKey("messages.id", ondelete="SET NULL"), nullable=True, index=True)
+    deleted_for_everyone_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
@@ -29,3 +31,13 @@ class MessageRead(Base):
     message_id: Mapped[int] = mapped_column(ForeignKey("messages.id", ondelete="CASCADE"), index=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     read_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class MessageDeletion(Base):
+    __tablename__ = "message_deletions"
+    __table_args__ = (UniqueConstraint("message_id", "user_id", name="uq_message_deletions_once"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    message_id: Mapped[int] = mapped_column(ForeignKey("messages.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

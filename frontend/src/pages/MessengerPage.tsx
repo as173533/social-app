@@ -1,8 +1,8 @@
-import { Check, ChevronDown, FileUp, Grid2X2, Image, Laugh, Maximize2, MessageSquare, Mic, MicOff, Minimize2, MonitorUp, MoreHorizontal, Paperclip, Phone, PhoneOff, RefreshCcw, Search, Send, Shield, SlidersHorizontal, Speaker, Square, UserPlus, Users, Video, VideoOff, Volume2, X } from "lucide-react";
+import { Bell, Check, ChevronDown, FileUp, Grid2X2, Image, Laugh, Maximize2, MessageSquare, Mic, MicOff, Minimize2, MonitorUp, MoreHorizontal, Paperclip, Phone, PhoneOff, RefreshCcw, Search, Send, Shield, SlidersHorizontal, Speaker, Square, UserPlus, Users, Video, VideoOff, Volume2, X } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { API_URL, WS_URL } from "../api/client";
-import { chatApi, friendApi, userApi } from "../api/services";
+import { callApi, chatApi, friendApi, userApi } from "../api/services";
 import { useAuthStore } from "../stores/authStore";
 import type { CallLog, Conversation, Friend, FriendRequest, Message, UploadedAttachment, User } from "../types";
 import { RingtonePlayer } from "../utils/ringtone";
@@ -10,6 +10,7 @@ import { WebRTCClient } from "../utils/webrtc";
 
 type ChatEvent =
   | { type: "message"; message: Message }
+  | { type: "message:deleted"; message_id: number; scope: "me" | "everyone"; message?: Message }
   | { type: "typing"; conversation_id: number; user_id: number; is_typing: boolean }
   | { type: "read"; conversation_id: number; user_id: number; message_ids: number[] }
   | { type: "presence"; user_id: number; online: boolean };
@@ -26,6 +27,9 @@ type EmojiTab = "all" | EmojiCategory | "stickers" | "gifs";
 type EmojiItem = { symbol: string; label: string; keywords: string };
 type StickerItem = { label: string; value: string; color: string; keywords: string };
 type GifItem = { label: string; value: string; icon: string; keywords: string };
+type GiphyItem = { id: string; title: string; url: string; preview: string };
+
+const GIPHY_API_KEY = import.meta.env.VITE_GIPHY_API_KEY as string | undefined;
 
 function normalizeMessage(message: Message): Message {
   return { ...message, message_type: message.message_type ?? "text", read_by: Array.isArray(message.read_by) ? message.read_by : [] };
@@ -106,15 +110,23 @@ export function MessengerPage() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [lastMessages, setLastMessages] = useState<Record<number, Message | undefined>>({});
   const [messages, setMessages] = useState<Message[]>([]);
+  const [mentionRecords, setMentionRecords] = useState<Message[]>([]);
+  const [callHistory, setCallHistory] = useState<CallLog[]>([]);
   const [selected, setSelected] = useState<Conversation | null>(null);
+  const [replyingTo, setReplyingTo] = useState<Message | null>(null);
+  const [showGroupModal, setShowGroupModal] = useState(false);
+  const [groupTitle, setGroupTitle] = useState("");
+  const [groupMemberIds, setGroupMemberIds] = useState<number[]>([]);
   const [body, setBody] = useState("");
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<User[]>([]);
   const [searchError, setSearchError] = useState("");
-  const [activeView, setActiveView] = useState<"chat" | "people">("chat");
+  const [activeView, setActiveView] = useState<"chat" | "people" | "activity">("chat");
   const [showEmojiPanel, setShowEmojiPanel] = useState(false);
   const [emojiTab, setEmojiTab] = useState<EmojiTab>("all");
   const [emojiSearch, setEmojiSearch] = useState("");
+  const [giphyResults, setGiphyResults] = useState<GiphyItem[]>([]);
+  const [giphyLoading, setGiphyLoading] = useState(false);
   const [showAudioMenu, setShowAudioMenu] = useState(false);
   const [noiseSuppression, setNoiseSuppression] = useState(true);
   const [showMobileDevices, setShowMobileDevices] = useState(false);
@@ -161,6 +173,7 @@ export function MessengerPage() {
   const recordingPreviewVideo = useRef<HTMLVideoElement | null>(null);
   const recordedChunks = useRef<Blob[]>([]);
   const discardRecordingOnStop = useRef(false);
+  const messageSwipe = useRef<{ id: number; x: number } | null>(null);
   const audioOutputIdRef = useRef(audioOutputId);
   const activeCallRef = useRef<CallLog | null>(activeCall);
   const localStreamRef = useRef<MediaStream | null>(localStream);
@@ -326,6 +339,9 @@ export function MessengerPage() {
     { label: "Good morning", value: "☀️ Good morning", icon: "☀️", keywords: "hello day" },
     { label: "Good night", value: "🌙 Good night", icon: "🌙", keywords: "sleep bye" }
   ];
+  const mentionMessages = mentionRecords.length
+    ? mentionRecords
+    : messages.filter((message) => user && message.sender_id !== user.id && message.body.toLowerCase().includes(`@${user.name.toLowerCase()}`));
   const searchNeedle = emojiSearch.trim().toLowerCase();
   const matchesSearch = (item: { label: string; keywords: string; value?: string; symbol?: string }) =>
     !searchNeedle || `${item.label} ${item.keywords} ${item.value ?? ""} ${item.symbol ?? ""}`.toLowerCase().includes(searchNeedle);
@@ -361,6 +377,28 @@ export function MessengerPage() {
     return selected.user1_id === peerId || selected.user2_id === peerId || selected.peer?.id === peerId;
   };
 
+  const conversationTitle = (conversation: Conversation | null) =>
+    conversation?.conversation_type === "group"
+      ? conversation.title || "Group"
+      : conversation?.peer?.name ?? "Chat";
+
+  const conversationSubtitle = (conversation: Conversation | null) =>
+    conversation?.conversation_type === "group"
+      ? `${conversation.members?.length ?? 0} members`
+      : callError || (typingUserId === conversation?.peer?.id ? "Typing..." : conversation?.peer?.online ? "Online" : "Offline");
+
+  const messageSummary = (message?: Message | null) => {
+    if (!message) return "";
+    if (message.deleted_for_everyone) return "This message was deleted";
+    if (message.attachment_name) return message.attachment_name;
+    if (message.message_type === "image") return "Photo";
+    if (message.message_type === "audio") return "Voice message";
+    if (message.message_type === "video") return "Video message";
+    if (message.message_type === "gif") return "GIF";
+    if (message.message_type === "sticker") return "Sticker";
+    return message.body || "Message";
+  };
+
   const cleanupCallMedia = () => {
     if (callTimeoutTimer.current) {
       window.clearTimeout(callTimeoutTimer.current);
@@ -381,21 +419,31 @@ export function MessengerPage() {
 
   const loadAll = async () => {
     if (!accessToken) return;
-    const [friendRows, requestRows, conversationRows] = await Promise.all([
+    const [friendRows, requestRows, conversationRows, callRows] = await Promise.all([
       friendApi.list(),
       friendApi.requests(),
-      chatApi.conversations()
+      chatApi.conversations(),
+      callApi.history().catch(() => [])
     ]);
     setFriends(friendRows);
     setRequests(requestRows);
     setConversations(conversationRows);
-    const lastEntries = await Promise.all(
+    setCallHistory(callRows);
+    const conversationMessages = await Promise.all(
       conversationRows.map(async (conversation) => {
         const items = await chatApi.messages(conversation.id).catch(() => []);
-        return [conversation.id, items.length ? normalizeMessage(items[items.length - 1]) : undefined] as const;
+        return { conversationId: conversation.id, items: items.map(normalizeMessage) };
       })
     );
-    setLastMessages(Object.fromEntries(lastEntries));
+    setLastMessages(Object.fromEntries(conversationMessages.map(({ conversationId, items }) => [conversationId, items.length ? items[items.length - 1] : undefined] as const)));
+    if (user) {
+      const mentionNeedle = `@${user.name.toLowerCase()}`;
+      setMentionRecords(
+        conversationMessages
+          .flatMap(({ items }) => items)
+          .filter((message) => message.sender_id !== user.id && message.body.toLowerCase().includes(mentionNeedle))
+      );
+    }
   };
 
   const selectConversation = (conversation: Conversation) => {
@@ -413,6 +461,35 @@ export function MessengerPage() {
     setSelected(null);
     navigate("/app");
     loadAll().catch(() => undefined);
+  };
+
+  const showActivityView = () => {
+    setActiveView("activity");
+    setSelected(null);
+    navigate("/app");
+    loadAll().catch(() => undefined);
+  };
+
+  const playMessageSound = () => {
+    try {
+      const AudioContextCtor = window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (!AudioContextCtor) return;
+      const context = new AudioContextCtor();
+      const gain = context.createGain();
+      const oscillator = context.createOscillator();
+      oscillator.type = "sine";
+      oscillator.frequency.setValueAtTime(660, context.currentTime);
+      oscillator.frequency.setValueAtTime(880, context.currentTime + 0.08);
+      gain.gain.setValueAtTime(0.0001, context.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.18, context.currentTime + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.22);
+      oscillator.connect(gain);
+      gain.connect(context.destination);
+      oscillator.start();
+      oscillator.stop(context.currentTime + 0.24);
+    } catch {
+      // Browsers may block notification audio until the user interacts with the page.
+    }
   };
 
   const loadDevices = async () => {
@@ -481,6 +558,7 @@ export function MessengerPage() {
     attachment_name?: string | null;
     attachment_mime?: string | null;
     attachment_size?: number | null;
+    reply_to_message_id?: number | null;
   }) => {
     if (!selected) return false;
     return sendSocketPayload(chatSocket.current, {
@@ -491,7 +569,8 @@ export function MessengerPage() {
       attachment_url: payload.attachment_url,
       attachment_name: payload.attachment_name,
       attachment_mime: payload.attachment_mime,
-      attachment_size: payload.attachment_size
+      attachment_size: payload.attachment_size,
+      reply_to_message_id: payload.reply_to_message_id ?? replyingTo?.id ?? null
     });
   };
 
@@ -637,12 +716,26 @@ export function MessengerPage() {
       const payload = JSON.parse(event.data) as ChatEvent;
       if (payload.type === "message") {
         const nextMessage = normalizeMessage(payload.message);
+        if (nextMessage.sender_id !== user?.id) {
+          playMessageSound();
+        }
         setMessages((current) =>
           current.some((message) => message.id === nextMessage.id) ? current : [...current, nextMessage]
         );
         setLastMessages((current) => ({ ...current, [nextMessage.conversation_id]: nextMessage }));
         loadAll().catch(() => undefined);
         scrollMessagesToBottom();
+      }
+      if (payload.type === "message:deleted") {
+        if (payload.scope === "me") {
+          setMessages((current) => current.filter((message) => message.id !== payload.message_id));
+          return;
+        }
+        if (payload.message) {
+          const deletedMessage = normalizeMessage(payload.message);
+          setMessages((current) => current.map((message) => (message.id === payload.message_id ? deletedMessage : message)));
+          setLastMessages((current) => ({ ...current, [deletedMessage.conversation_id]: deletedMessage }));
+        }
       }
       if (payload.type === "typing") {
         setTypingUserId(payload.is_typing ? payload.user_id : null);
@@ -787,6 +880,44 @@ export function MessengerPage() {
   }, [selected]);
 
   useEffect(() => {
+    if (emojiTab !== "gifs" || !GIPHY_API_KEY) {
+      setGiphyResults([]);
+      return;
+    }
+    const controller = new AbortController();
+    const queryValue = emojiSearch.trim();
+    setGiphyLoading(true);
+    const endpoint = queryValue ? "search" : "trending";
+    const params = new URLSearchParams({
+      api_key: GIPHY_API_KEY,
+      limit: "12",
+      rating: "pg",
+      bundle: "messaging_non_clips"
+    });
+    if (queryValue) params.set("q", queryValue);
+    fetch(`https://api.giphy.com/v1/gifs/${endpoint}?${params.toString()}`, { signal: controller.signal })
+      .then((response) => response.json())
+      .then((payload) => {
+        const results = Array.isArray(payload.data)
+          ? payload.data.map((item: any) => ({
+              id: String(item.id),
+              title: item.title || "GIF",
+              preview: item.images?.fixed_width_small?.url || item.images?.preview_gif?.url || item.images?.downsized?.url,
+              url: item.images?.original?.url || item.images?.downsized?.url
+            })).filter((item: GiphyItem) => item.preview && item.url)
+          : [];
+        setGiphyResults(results);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setGiphyResults([]);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setGiphyLoading(false);
+      });
+    return () => controller.abort();
+  }, [emojiSearch, emojiTab]);
+
+  useEffect(() => {
     if (!routeConversationId || !Number.isFinite(routeConversationId)) {
       if (selected) setSelected(null);
       return;
@@ -864,8 +995,52 @@ export function MessengerPage() {
     if (!selected || !body.trim()) return;
     sendChatMessage({ body: body.trim(), message_type: "text" });
     setBody("");
+    setReplyingTo(null);
     setShowEmojiPanel(false);
     scrollMessagesToBottom();
+  };
+
+  const deleteMessage = async (message: Message, scope: "me" | "everyone") => {
+    if (sendSocketPayload(chatSocket.current, { type: "message:delete", message_id: message.id, scope })) {
+      return;
+    }
+    const deleted = await chatApi.deleteMessage(message.id, scope);
+    if (scope === "me") {
+      setMessages((current) => current.filter((item) => item.id !== message.id));
+    } else {
+      setMessages((current) => current.map((item) => (item.id === message.id ? normalizeMessage(deleted) : item)));
+    }
+  };
+
+  const toggleGroupMember = (friendId: number) => {
+    setGroupMemberIds((current) =>
+      current.includes(friendId) ? current.filter((id) => id !== friendId) : [...current, friendId]
+    );
+  };
+
+  const startMessageSwipe = (message: Message, event: React.PointerEvent<HTMLDivElement>) => {
+    messageSwipe.current = { id: message.id, x: event.clientX };
+  };
+
+  const endMessageSwipe = (message: Message, event: React.PointerEvent<HTMLDivElement>) => {
+    const swipe = messageSwipe.current;
+    messageSwipe.current = null;
+    if (message.deleted_for_everyone) return;
+    if (!swipe || swipe.id !== message.id) return;
+    if (Math.abs(event.clientX - swipe.x) > 70) {
+      setReplyingTo(message);
+    }
+  };
+
+  const createGroup = async () => {
+    const title = groupTitle.trim();
+    if (!title || !groupMemberIds.length) return;
+    const group = await chatApi.createGroup({ title, member_ids: groupMemberIds });
+    setConversations((current) => [group, ...current.filter((item) => item.id !== group.id)]);
+    selectConversation(group);
+    setGroupTitle("");
+    setGroupMemberIds([]);
+    setShowGroupModal(false);
   };
 
   const sendCallEventMessage = (callType: "audio" | "video", action: "start" | "end") => {
@@ -1487,14 +1662,22 @@ export function MessengerPage() {
   ) : null;
 
   return (
-    <main className="relative grid h-[calc(100dvh-3.5rem)] grid-cols-1 overflow-hidden bg-[#f5f5fb] md:grid-cols-[64px_300px_minmax(0,1fr)] xl:grid-cols-[64px_310px_minmax(0,1fr)_320px]">
-      <nav className="hidden border-r border-[#ddddec] bg-[#ebebf5] py-3 md:flex md:flex-col md:items-center md:gap-2">
+    <main className="relative grid h-[calc(100dvh-3.5rem)] grid-cols-1 overflow-hidden bg-[#f5f5fb] pb-14 md:grid-cols-[64px_300px_minmax(0,1fr)] md:pb-0 xl:grid-cols-[64px_310px_minmax(0,1fr)_320px]">
+      <nav className="fixed inset-x-0 bottom-0 z-40 grid h-14 grid-cols-3 justify-items-center border-t border-[#ddddec] bg-[#ebebf5] px-2 py-1 md:static md:h-auto md:grid-cols-1 md:border-r md:border-t-0 md:px-0 md:py-3 md:flex md:flex-col md:items-center md:gap-2">
         <button
           onClick={showChatView}
           className={`grid h-12 w-12 place-items-center rounded-md ${activeView === "chat" ? "bg-[#6264a7] text-white" : "text-[#464775] hover:bg-white"}`}
           title="Chat"
         >
           <MessageSquare size={21} />
+        </button>
+        <button
+          onClick={showActivityView}
+          className={`relative grid h-12 w-12 place-items-center rounded-md ${activeView === "activity" ? "bg-[#6264a7] text-white" : "text-[#464775] hover:bg-white"}`}
+          title="Activity"
+        >
+          <Bell size={21} />
+          {incomingRequests.length > 0 && <span className="absolute right-2 top-2 h-2.5 w-2.5 rounded-full bg-[#c4314b]" />}
         </button>
         <button
           onClick={showPeopleView}
@@ -1507,11 +1690,68 @@ export function MessengerPage() {
 
       <aside className={`${selected ? "hidden md:block" : "block"} overflow-y-auto border-r border-[#ddddec] bg-[#f7f7fc] p-3`}>
         <div className="mb-3 flex items-center justify-between px-1">
-          <h2 className="text-xl font-semibold tracking-tight">{activeView === "chat" ? "Chat" : "People"}</h2>
-          <span className="grid h-9 w-9 place-items-center rounded-md bg-white text-[#464775] shadow-sm">
+          <h2 className="text-xl font-semibold tracking-tight">{activeView === "chat" ? "Chat" : activeView === "activity" ? "Activity" : "People"}</h2>
+          <button
+            type="button"
+            onClick={() => activeView === "chat" ? setShowGroupModal(true) : activeView === "activity" ? showPeopleView() : showPeopleView()}
+            className="grid h-9 w-9 place-items-center rounded-md bg-white text-[#464775] shadow-sm hover:bg-[#ededfa]"
+            title={activeView === "chat" ? "Create group" : "People"}
+          >
             {activeView === "chat" ? <MessageSquare size={17} /> : <UserPlus size={17} />}
-          </span>
+          </button>
         </div>
+        {activeView === "activity" && (
+          <div className="space-y-4">
+            <section className="rounded-md border border-[#d1d1e0] bg-white p-3">
+              <h3 className="font-semibold">Friend requests</h3>
+              <div className="mt-3 space-y-2">
+                {incomingRequests.length === 0 && <p className="text-sm text-slate-500">No pending requests.</p>}
+                {incomingRequests.map((request) => (
+                  <div key={request.id} className="rounded-md bg-[#f7f7fc] p-3">
+                    <div className="flex items-center gap-2">
+                      <span className="grid h-9 w-9 place-items-center overflow-hidden rounded-full bg-[#6264a7] font-semibold text-white">
+                        {requestSenderAvatar(request) ? <img src={avatarSrc(requestSenderAvatar(request))} alt={requestSenderName(request)} className="h-full w-full object-cover" /> : requestSenderName(request).slice(0, 1).toUpperCase()}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate text-sm font-medium">{requestSenderName(request)}</span>
+                    </div>
+                    <div className="mt-3 grid grid-cols-2 gap-2">
+                      <button onClick={() => acceptRequest(request.id)} className="rounded-md bg-[#13a10e] py-2 text-sm font-medium text-white">Accept</button>
+                      <button onClick={() => rejectRequest(request.id)} className="rounded-md bg-[#c4314b] py-2 text-sm font-medium text-white">Reject</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+            <section className="rounded-md border border-[#d1d1e0] bg-white p-3">
+              <h3 className="font-semibold">Call records</h3>
+              <div className="mt-3 space-y-2">
+                {callHistory.length === 0 && <p className="text-sm text-slate-500">No call records yet.</p>}
+                {callHistory.slice(0, 12).map((call) => {
+                  const otherId = call.caller_id === user?.id ? call.callee_id : call.caller_id;
+                  const other = friends.find((friend) => friend.user.id === otherId)?.user;
+                  return (
+                    <div key={call.id} className="rounded-md bg-[#f7f7fc] p-3 text-sm">
+                      <p className="font-medium">{other?.name ?? `User #${otherId}`}</p>
+                      <p className="text-xs capitalize text-slate-500">{call.call_type} call {call.state} at {formatClockTime(call.started_at)}</p>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+            <section className="rounded-md border border-[#d1d1e0] bg-white p-3">
+              <h3 className="font-semibold">Mentions</h3>
+              <div className="mt-3 space-y-2">
+                {mentionMessages.length === 0 && <p className="text-sm text-slate-500">No mentions in this chat.</p>}
+                {mentionMessages.slice(-6).map((message) => (
+                  <div key={message.id} className="rounded-md bg-[#f7f7fc] p-3 text-sm">
+                    <p className="truncate">{message.body}</p>
+                    <p className="text-xs text-slate-500">{formatClockTime(message.created_at)}</p>
+                  </div>
+                ))}
+              </div>
+            </section>
+          </div>
+        )}
         <div className="relative">
           <Search className="absolute left-3 top-3 text-slate-400" size={18} />
           <input
@@ -1576,10 +1816,34 @@ export function MessengerPage() {
             </div>
           </>
         )}
+        {activeView === "chat" && conversations.some((conversation) => conversation.conversation_type === "group") && (
+          <>
+            <h2 className="mt-6 px-1 text-sm font-semibold text-slate-500">Groups</h2>
+            <div className="mt-3 space-y-2">
+              {conversations.filter((conversation) => conversation.conversation_type === "group").map((conversation) => {
+                const lastMessage = lastMessages[conversation.id];
+                const unread = messageUnread(lastMessage, user?.id);
+                return (
+                  <button key={conversation.id} onClick={() => selectConversation(conversation)} className="flex w-full items-center gap-3 rounded-md p-3 text-left hover:bg-[#ededfa]">
+                    <span className="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-full bg-[#6264a7] font-semibold text-white">
+                      {(conversation.title ?? "G").slice(0, 1).toUpperCase()}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className={`block truncate ${unread ? "font-bold" : "font-medium"}`}>{conversation.title ?? "Group"}</span>
+                      <span className={`block truncate text-xs ${unread ? "font-bold text-slate-900" : "text-slate-500"}`}>
+                        {messagePreview(lastMessage, user?.id)}
+                      </span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        )}
         <h2 className="mt-6 px-1 text-sm font-semibold text-slate-500">{activeView === "chat" ? "Friends" : "Your Friends"}</h2>
         <div className="mt-3 space-y-2">
           {friends.map((friend) => {
-            const conversation = conversations.find((item) => item.peer?.id === friend.user.id || item.user1_id === friend.user.id || item.user2_id === friend.user.id);
+            const conversation = conversations.find((item) => item.conversation_type !== "group" && (item.peer?.id === friend.user.id || item.user1_id === friend.user.id || item.user2_id === friend.user.id));
             const lastMessage = conversation ? lastMessages[conversation.id] : undefined;
             const unread = messageUnread(lastMessage, user?.id);
             return (
@@ -1654,16 +1918,20 @@ export function MessengerPage() {
               </section>
             </div>
           </div>
-        ) : selected && peer ? (
+        ) : selected ? (
           <>
             <div className="flex items-center justify-between border-b border-[#ddddec] bg-white px-3 py-2 sm:px-4">
               <div className="min-w-0">
-                <h2 className="font-semibold">{peer.name}</h2>
-                <p className="truncate text-xs text-slate-500">{callError || (typingUserId === peer.id ? "Typing..." : peer.online ? "Online" : "Offline")}</p>
+                <h2 className="font-semibold">{conversationTitle(selected)}</h2>
+                <p className="truncate text-xs text-slate-500">{conversationSubtitle(selected)}</p>
               </div>
               <div className="flex shrink-0 gap-1 sm:gap-2">
-                <button onClick={() => startCall("audio")} className="grid h-9 w-9 place-items-center rounded-md text-[#464775] hover:bg-[#ededfa]" title="Audio call"><Phone size={18} /></button>
-                <button onClick={() => startCall("video")} className="grid h-9 w-9 place-items-center rounded-md text-[#464775] hover:bg-[#ededfa]" title="Video call"><Video size={18} /></button>
+                {selected.conversation_type !== "group" && (
+                  <>
+                    <button onClick={() => startCall("audio")} className="grid h-9 w-9 place-items-center rounded-md text-[#464775] hover:bg-[#ededfa]" title="Audio call"><Phone size={18} /></button>
+                    <button onClick={() => startCall("video")} className="grid h-9 w-9 place-items-center rounded-md text-[#464775] hover:bg-[#ededfa]" title="Video call"><Video size={18} /></button>
+                  </>
+                )}
                 <button onClick={() => setShowMobileDevices((value) => !value)} className="grid h-9 w-9 place-items-center rounded-md text-[#464775] hover:bg-[#ededfa] xl:hidden" title="Call devices"><SlidersHorizontal size={18} /></button>
               </div>
             </div>
@@ -1687,7 +1955,28 @@ export function MessengerPage() {
                 const mine = message.sender_id === user?.id;
                 return (
                   <div key={message.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}>
-                    <div className={`max-w-[78%] rounded-md px-3.5 py-2 text-sm shadow-sm ${mine ? "bg-[#6264a7] text-white" : "bg-white text-slate-900"}`}>
+                    <div
+                      onPointerDown={(event) => startMessageSwipe(message, event)}
+                      onPointerUp={(event) => endMessageSwipe(message, event)}
+                      className={`group max-w-[78%] rounded-md px-3.5 py-2 text-sm shadow-sm ${mine ? "bg-[#6264a7] text-white" : "bg-white text-slate-900"}`}
+                    >
+                      {message.reply_to && (
+                        <button
+                          type="button"
+                          onClick={() => setReplyingTo(message.reply_to ? ({ ...message.reply_to, conversation_id: message.conversation_id, attachment_url: null, attachment_mime: null, attachment_size: null, created_at: message.created_at, read_by: [] } as Message) : null)}
+                          className={`mb-2 block w-full rounded-md border-l-4 px-2 py-1 text-left text-xs ${mine ? "border-white/70 bg-white/15" : "border-[#6264a7] bg-[#f3f3fb]"}`}
+                        >
+                          <span className="block font-semibold">Reply</span>
+                          <span className="block truncate">{messageSummary(message.reply_to as Message)}</span>
+                        </button>
+                      )}
+                      {message.message_type === "gif" && message.body.startsWith("http") && (
+                        <img src={message.body} alt="GIF" className="mb-2 max-h-72 rounded-md object-contain" />
+                      )}
+                      {message.deleted_for_everyone ? (
+                        <p className="italic opacity-80">This message was deleted</p>
+                      ) : (
+                        <>
                       {message.message_type === "image" && message.attachment_url && (
                         <img src={absoluteMediaUrl(message.attachment_url)} alt={message.attachment_name ?? "Image"} className="mb-2 max-h-72 rounded-md object-contain" />
                       )}
@@ -1708,8 +1997,17 @@ export function MessengerPage() {
                           <span className="truncate">{message.attachment_name ?? "Attachment"}</span>
                         </a>
                       )}
-                      {message.body && <p className={message.message_type === "emoji" || message.message_type === "sticker" ? "text-3xl" : ""}>{message.body}</p>}
-                      <p className={`mt-1 text-[11px] ${mine ? "text-blue-100" : "text-slate-400"}`}>{mine && includesNumber(message.read_by, peer.id) ? "Read" : "Sent"}</p>
+                      {message.body && !(message.message_type === "gif" && message.body.startsWith("http")) && <p className={message.message_type === "emoji" || message.message_type === "sticker" ? "text-3xl" : ""}>{message.body}</p>}
+                        </>
+                      )}
+                      <div className={`mt-1 flex items-center justify-between gap-3 text-[11px] ${mine ? "text-blue-100" : "text-slate-400"}`}>
+                        <span>{mine && peer && includesNumber(message.read_by, peer.id) ? "Read" : "Sent"}</span>
+                        <span className="flex gap-2 opacity-0 transition group-hover:opacity-100">
+                          {!message.deleted_for_everyone && <button type="button" onClick={() => setReplyingTo(message)} className="underline">Reply</button>}
+                          <button type="button" onClick={() => deleteMessage(message, "me")} className="underline">Delete me</button>
+                          {mine && !message.deleted_for_everyone && <button type="button" onClick={() => deleteMessage(message, "everyone")} className="underline">Delete all</button>}
+                        </span>
+                      </div>
                     </div>
                   </div>
                 );
@@ -1807,7 +2105,17 @@ export function MessengerPage() {
                           <button type="button" onClick={() => setEmojiTab("gifs")} className="text-xs text-slate-500">See all</button>
                         </div>
                         <div className="mt-2 grid grid-cols-3 gap-2">
-                          {filteredGifOptions.map((gif, index) => (
+                          {giphyResults.length > 0 ? giphyResults.map((gif) => (
+                            <button
+                              key={gif.id}
+                              type="button"
+                              onClick={() => sendQuickMessage(gif.url, "gif")}
+                              className="overflow-hidden rounded-md bg-slate-100 shadow-sm hover:scale-[1.02]"
+                              title={gif.title}
+                            >
+                              <img src={gif.preview} alt={gif.title} className="h-24 w-full object-cover" />
+                            </button>
+                          )) : filteredGifOptions.map((gif, index) => (
                             <button
                               key={gif.value}
                               type="button"
@@ -1821,13 +2129,26 @@ export function MessengerPage() {
                             </button>
                           ))}
                         </div>
-                        <p className="mt-3 text-center text-[11px] text-slate-500">GIFs powered by local presets</p>
+                        <p className="mt-3 text-center text-[11px] text-slate-500">
+                          {GIPHY_API_KEY ? (giphyLoading ? "Loading GIFs from GIPHY..." : "GIFs powered by GIPHY") : "Add VITE_GIPHY_API_KEY to use GIFs powered by GIPHY"}
+                        </p>
                       </>
                     )}
                   </div>
                 </div>
               )}
               {composerError && <p className="mb-2 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{composerError}</p>}
+              {replyingTo && (
+                <div className="mb-2 flex items-center justify-between rounded-md border-l-4 border-[#6264a7] bg-[#f3f3fb] px-3 py-2 text-sm">
+                  <span className="min-w-0">
+                    <span className="block font-semibold text-slate-700">Replying to message</span>
+                    <span className="block truncate text-slate-500">{messageSummary(replyingTo)}</span>
+                  </span>
+                  <button type="button" onClick={() => setReplyingTo(null)} className="grid h-8 w-8 place-items-center rounded-md text-slate-500 hover:bg-white">
+                    <X size={16} />
+                  </button>
+                </div>
+              )}
               <input ref={fileInput} type="file" className="hidden" onChange={(event) => handleFileSelect(event.target.files?.[0])} />
               <input ref={mediaInput} type="file" accept="image/*,video/*,audio/*" className="hidden" onChange={(event) => handleFileSelect(event.target.files?.[0])} />
               <div className="flex gap-2">
@@ -1895,7 +2216,7 @@ export function MessengerPage() {
         <div className="mt-3 space-y-2">
           {conversations.map((conversation) => (
             <button key={conversation.id} onClick={() => selectConversation(conversation)} className="w-full rounded-md border border-[#d1d1e0] bg-white p-3 text-left text-sm hover:bg-[#ededfa]">
-              <span className="block font-medium">{conversation.peer?.name ?? `Conversation ${conversation.id}`}</span>
+              <span className="block font-medium">{conversationTitle(conversation)}</span>
               <span className={`block truncate text-xs ${messageUnread(lastMessages[conversation.id], user?.id) ? "font-bold text-slate-900" : "text-slate-500"}`}>
                 {messagePreview(lastMessages[conversation.id], user?.id)}
               </span>
@@ -1921,6 +2242,50 @@ export function MessengerPage() {
           style={{ transform: `translate(${callPosition.x}px, ${callPosition.y}px)` }}
         >
           {callPanel}
+        </div>
+      )}
+      {showGroupModal && (
+        <div className="fixed inset-0 z-[80] grid place-items-center bg-slate-950/50 px-4">
+          <section className="w-full max-w-md rounded-lg bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-[#ddddec] px-4 py-3">
+              <h2 className="font-semibold">Create group</h2>
+              <button type="button" onClick={() => setShowGroupModal(false)} className="grid h-8 w-8 place-items-center rounded-md hover:bg-slate-100">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="space-y-4 p-4">
+              <input
+                value={groupTitle}
+                onChange={(event) => setGroupTitle(event.target.value)}
+                className="w-full rounded-md border border-[#d1d1e0] px-3 py-2 outline-none focus:border-[#6264a7]"
+                placeholder="Group name"
+              />
+              <div className="max-h-72 space-y-2 overflow-y-auto">
+                {friends.map((friend) => (
+                  <label key={friend.friendship_id} className="flex cursor-pointer items-center gap-3 rounded-md p-2 hover:bg-[#f5f5fb]">
+                    <input
+                      type="checkbox"
+                      checked={groupMemberIds.includes(friend.user.id)}
+                      onChange={() => toggleGroupMember(friend.user.id)}
+                      className="accent-[#6264a7]"
+                    />
+                    <span className="grid h-9 w-9 place-items-center overflow-hidden rounded-full bg-[#6264a7] font-semibold text-white">
+                      {friend.user.avatar ? <img src={avatarSrc(friend.user.avatar)} alt={friend.user.name} className="h-full w-full object-cover" /> : friend.user.name.slice(0, 1).toUpperCase()}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate">{friend.user.name}</span>
+                  </label>
+                ))}
+              </div>
+              <button
+                type="button"
+                onClick={createGroup}
+                disabled={!groupTitle.trim() || !groupMemberIds.length}
+                className="w-full rounded-md bg-[#6264a7] py-2.5 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Create group
+              </button>
+            </div>
+          </section>
         </div>
       )}
       {recordingPreview && (

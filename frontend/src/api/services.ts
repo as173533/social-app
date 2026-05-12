@@ -32,10 +32,13 @@ export const friendApi = {
 export const chatApi = {
   conversations: () => api.get<Conversation[]>("/chat/conversations").then((r) => r.data),
   createConversation: (peerId: number) => api.post<Conversation>(`/chat/conversations/${peerId}`).then((r) => r.data),
+  createGroup: (data: { title: string; member_ids: number[] }) => api.post<Conversation>("/chat/groups", data).then((r) => r.data),
   messages: (conversationId: number) =>
     api.get<Message[]>(`/chat/conversations/${conversationId}/messages`).then((r) => r.data),
   send: (conversationId: number, data: Partial<Message> & { body: string }) =>
     api.post<Message>(`/chat/conversations/${conversationId}/messages`, data).then((r) => r.data),
+  deleteMessage: (messageId: number, scope: "me" | "everyone") =>
+    api.delete<Message>(`/chat/messages/${messageId}`, { data: { scope } }).then((r) => r.data),
   uploadAttachment: (conversationId: number, file: File | Blob, filename: string) => {
     const data = new FormData();
     data.append("file", file, filename);
