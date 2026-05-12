@@ -97,17 +97,20 @@ export function MessengerPage() {
   const [searchError, setSearchError] = useState("");
   const [activeView, setActiveView] = useState<"chat" | "people">("chat");
   const [showEmojiPanel, setShowEmojiPanel] = useState(false);
-  const [emojiTab, setEmojiTab] = useState<"all" | "emoji" | "gifs">("all");
+  const [emojiTab, setEmojiTab] = useState<"all" | "emoji" | "gifs" | "gestures" | "people" | "food" | "places" | "objects" | "symbols">("all");
   const [showMobileDevices, setShowMobileDevices] = useState(false);
   const [typingUserId, setTypingUserId] = useState<number | null>(null);
   const [composerError, setComposerError] = useState("");
   const [uploading, setUploading] = useState(false);
   const [recordingKind, setRecordingKind] = useState<"audio" | "video" | null>(null);
+  const [recordingPreview, setRecordingPreview] = useState<{ kind: "audio" | "video"; blob: Blob | null; url: string; stream?: MediaStream } | null>(null);
   const [screenSharing, setScreenSharing] = useState(false);
   const [activeCall, setActiveCall] = useState<CallLog | null>(null);
   const [callError, setCallError] = useState("");
   const [callMinimized, setCallMinimized] = useState(false);
   const [callTick, setCallTick] = useState(0);
+  const [micMuted, setMicMuted] = useState(false);
+  const [cameraOff, setCameraOff] = useState(false);
   const [soundReady, setSoundReady] = useState(false);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
@@ -133,6 +136,7 @@ export function MessengerPage() {
   const typingTimer = useRef<number | null>(null);
   const callTimeoutTimer = useRef<number | null>(null);
   const recorder = useRef<MediaRecorder | null>(null);
+  const recordingPreviewVideo = useRef<HTMLVideoElement | null>(null);
   const recordedChunks = useRef<Blob[]>([]);
   const audioOutputIdRef = useRef(audioOutputId);
   const activeCallRef = useRef<CallLog | null>(activeCall);
@@ -154,7 +158,16 @@ export function MessengerPage() {
     () => new Set(requests.filter((request) => request.receiver_id === user?.id && request.status === "pending").map((request) => request.sender_id)),
     [requests, user?.id]
   );
-  const emojiOptions = ["😮", "😢", "😠", "😍", "😎", "🙌", "🤝", "🔥", "🎉", "👀", "💯", "💡"];
+  const emojiGroups: Record<Exclude<typeof emojiTab, "all" | "gifs">, string[]> = {
+    emoji: ["😮", "😢", "😠", "😍", "😎", "🙌", "🤝", "🔥", "🎉", "👀", "💯", "💡", "✅", "➕", "❌", "🔜", "🚢", "🤔", "🥺", "😭", "🤭", "😌", "😇", "👻", "😳", "😋", "😱", "😐", "🙄", "🤩", "🤪", "😏", "🥳", "🤣", "🫡", "🤗"],
+    gestures: ["👍", "👎", "👌", "✌️", "🤞", "🤟", "🤘", "👋", "👏", "🙌", "🙏", "💪", "🫶", "☝️", "👊", "🤙"],
+    people: ["😀", "😃", "😄", "😁", "🙂", "😊", "🥰", "😘", "😜", "🤓", "😴", "😷", "🤒", "🥶", "😵", "🤯"],
+    food: ["🍕", "🍔", "🍟", "🌮", "🍿", "🍩", "🍪", "🎂", "☕", "🍵", "🍎", "🍌", "🍓", "🍇", "🥗", "🍫"],
+    places: ["🚗", "🚕", "🚌", "🚆", "✈️", "🚀", "🏠", "🏢", "🏖️", "⛰️", "🌍", "🌙", "⭐", "☀️", "🌧️", "🌈"],
+    objects: ["💡", "📎", "📌", "📷", "🎧", "💻", "📱", "⌚", "🎁", "🔑", "🔒", "🧭", "📝", "📚", "⚙️", "🛠️"],
+    symbols: ["❤️", "🧡", "💛", "💚", "💙", "💜", "🖤", "💔", "❗", "❓", "⚠️", "♻️", "🔴", "🟢", "🔵", "✔️"]
+  };
+  const emojiOptions = Object.values(emojiGroups).flat();
   const stickerOptions = ["🌟", "💯", "👏", "🙌", "🚀", "✅"];
   const gifOptions = [
     { label: "Deal with it", value: "😎 Deal with it" },
@@ -204,6 +217,8 @@ export function MessengerPage() {
     setPendingOffer(null);
     setCallMinimized(false);
     setScreenSharing(false);
+    setMicMuted(false);
+    setCameraOff(false);
   };
 
   const loadAll = async () => {
@@ -412,6 +427,16 @@ export function MessengerPage() {
       }
     };
   }, [activeCall?.id, activeCall?.state, activeCall?.caller_id, user?.id]);
+
+  useEffect(() => {
+    if (recordingPreviewVideo.current && recordingPreview?.stream) {
+      recordingPreviewVideo.current.srcObject = recordingPreview.stream;
+      recordingPreviewVideo.current.play().catch(() => undefined);
+    }
+    if (recordingPreviewVideo.current && !recordingPreview?.stream) {
+      recordingPreviewVideo.current.srcObject = null;
+    }
+  }, [recordingPreview]);
 
   useEffect(() => {
     if (!accessToken) return;
@@ -721,6 +746,9 @@ export function MessengerPage() {
       const mediaRecorder = new MediaRecorder(stream);
       recorder.current = mediaRecorder;
       setRecordingKind(kind);
+      if (kind === "video") {
+        setRecordingPreview({ kind, blob: null, url: "", stream });
+      }
       mediaRecorder.ondataavailable = (event) => {
         if (event.data.size > 0) recordedChunks.current.push(event.data);
       };
@@ -728,9 +756,13 @@ export function MessengerPage() {
         stream.getTracks().forEach((track) => track.stop());
         const mime = mediaRecorder.mimeType || (kind === "video" ? "video/webm" : "audio/webm");
         const blob = new Blob(recordedChunks.current, { type: mime });
+        const url = URL.createObjectURL(blob);
         recorder.current = null;
         setRecordingKind(null);
-        uploadAndSend(blob, `${kind}-message-${Date.now()}.webm`);
+        setRecordingPreview((current) => {
+          if (current?.url) URL.revokeObjectURL(current.url);
+          return { kind, blob, url };
+        });
       };
       mediaRecorder.start();
     } catch {
@@ -798,6 +830,42 @@ export function MessengerPage() {
     } catch {
       setCallError("Screen share was cancelled or blocked.");
     }
+  };
+
+  const discardRecordingPreview = () => {
+    if (recordingPreview?.url) URL.revokeObjectURL(recordingPreview.url);
+    recordingPreview?.stream?.getTracks().forEach((track) => track.stop());
+    setRecordingPreview(null);
+  };
+
+  const sendRecordingPreview = async () => {
+    if (!recordingPreview?.blob) return;
+    const { blob, kind } = recordingPreview;
+    discardRecordingPreview();
+    await uploadAndSend(blob, `${kind}-message-${Date.now()}.webm`);
+  };
+
+  const rerecordVideoMessage = async () => {
+    discardRecordingPreview();
+    await toggleRecording("video");
+  };
+
+  const toggleMicMute = () => {
+    const nextMuted = !micMuted;
+    setMicMuted(nextMuted);
+    rtc.current?.setAudioEnabled(!nextMuted);
+    localStream?.getAudioTracks().forEach((track) => {
+      track.enabled = !nextMuted;
+    });
+  };
+
+  const toggleCameraOff = () => {
+    const nextOff = !cameraOff;
+    setCameraOff(nextOff);
+    rtc.current?.setVideoEnabled(!nextOff);
+    localStream?.getVideoTracks().forEach((track) => {
+      track.enabled = !nextOff;
+    });
   };
 
   const startCall = async (callType: "audio" | "video") => {
@@ -1011,8 +1079,11 @@ export function MessengerPage() {
               <span className="hidden rounded-md bg-[#f7f7fc] px-2 py-1 text-xs font-medium text-slate-600 sm:inline">
                 {formatClockTime(activeCall.started_at)}
               </span>
-              <button className="grid h-9 w-9 place-items-center rounded-md text-[#464775] hover:bg-[#ededfa]" title="Microphone">
+              <button onClick={toggleMicMute} className={`grid h-9 w-9 place-items-center rounded-md ${micMuted ? "bg-[#c4314b] text-white" : "text-[#464775] hover:bg-[#ededfa]"}`} title={micMuted ? "Unmute microphone" : "Mute microphone"}>
                 <Mic size={17} />
+              </button>
+              <button onClick={toggleCameraOff} className={`grid h-9 w-9 place-items-center rounded-md ${cameraOff ? "bg-[#c4314b] text-white" : "text-[#464775] hover:bg-[#ededfa]"}`} title={cameraOff ? "Turn camera on" : "Turn camera off"}>
+                <Video size={17} />
               </button>
               <button onClick={switchCamera} className="grid h-9 w-9 place-items-center rounded-md text-[#464775] hover:bg-[#ededfa]" title="Switch camera">
                 <RefreshCcw size={16} />
@@ -1070,7 +1141,11 @@ export function MessengerPage() {
           </div>
           <div className="absolute bottom-4 right-4 h-32 w-44 overflow-hidden rounded-lg border border-white/70 bg-[#e8f7f4] shadow-xl">
             {activeCall.call_type === "video" && localStream ? (
-              <video ref={bindLocalVideo} muted autoPlay playsInline className="h-full w-full object-cover" />
+              cameraOff ? (
+                <div className="grid h-full place-items-center text-sm font-semibold text-slate-600">Camera off</div>
+              ) : (
+                <video ref={bindLocalVideo} muted autoPlay playsInline className="h-full w-full object-cover" />
+              )
             ) : (
               <div className="grid h-full place-items-center">
                 <div className="grid h-16 w-16 place-items-center overflow-hidden rounded-full bg-[#c7d5e8] text-xl font-semibold text-[#123a63]">
@@ -1335,19 +1410,39 @@ export function MessengerPage() {
                       </button>
                     ))}
                   </div>
+                  <div className="flex gap-1 overflow-x-auto border-b border-[#e6e6f2] px-2 py-2 text-lg">
+                    {([
+                      ["emoji", "🕘"],
+                      ["people", "☺️"],
+                      ["gestures", "👋"],
+                      ["food", "🍕"],
+                      ["places", "🏙️"],
+                      ["objects", "💡"],
+                      ["symbols", "#️⃣"]
+                    ] as const).map(([tab, icon]) => (
+                      <button
+                        key={tab}
+                        type="button"
+                        onClick={() => setEmojiTab(tab)}
+                        className={`grid h-8 w-8 shrink-0 place-items-center rounded-md ${emojiTab === tab ? "bg-[#ededfa] text-[#464775]" : "hover:bg-[#f7f7fc]"}`}
+                      >
+                        {icon}
+                      </button>
+                    ))}
+                  </div>
                   <div className="p-3">
                     <div className="relative">
                       <Search className="absolute right-3 top-2.5 text-slate-400" size={16} />
                       <input className="w-full rounded-md border border-[#d1d1e0] py-2 pl-3 pr-9 text-sm outline-none focus:border-[#6264a7]" placeholder="Find something fun" />
                     </div>
-                    {(emojiTab === "all" || emojiTab === "emoji") && (
+                    {emojiTab !== "gifs" && (
                       <>
                         <div className="mt-3 flex items-center justify-between text-sm">
-                          <span className="font-medium text-slate-700">Emoji</span>
+                          <span className="font-medium text-slate-700">{emojiTab === "all" ? "Recent" : "Emoji"}</span>
                           <button type="button" onClick={() => setEmojiTab("emoji")} className="text-xs text-slate-500">See all</button>
                         </div>
                         <div className="mt-2 grid grid-cols-6 gap-2">
-                          {emojiOptions.map((emoji) => (
+                          {(emojiTab === "all" ? emojiOptions.slice(0, 36) : emojiGroups[emojiTab as keyof typeof emojiGroups]).map((emoji) => (
                             <button key={emoji} type="button" onClick={() => setBody((value) => `${value}${emoji}`)} className="grid h-10 place-items-center rounded-md text-2xl hover:bg-[#ededfa]">
                               {emoji}
                             </button>
@@ -1477,6 +1572,44 @@ export function MessengerPage() {
           }
         >
           {callPanel}
+        </div>
+      )}
+      {recordingPreview && (
+        <div className="fixed inset-0 z-[90] grid place-items-center bg-slate-950/60 px-4">
+          <section className="w-full max-w-lg overflow-hidden rounded-lg bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-[#ddddec] px-4 py-3">
+              <h2 className="font-semibold">{recordingKind ? "Recording video message" : "Preview video message"}</h2>
+              <button onClick={discardRecordingPreview} className="grid h-8 w-8 place-items-center rounded-md hover:bg-slate-100" title="Close">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="bg-slate-950">
+              {recordingPreview.stream ? (
+                <video ref={recordingPreviewVideo} muted autoPlay playsInline className="aspect-video w-full object-cover" />
+              ) : (
+                <video src={recordingPreview.url} controls className="aspect-video w-full object-cover" />
+              )}
+            </div>
+            <div className="flex flex-wrap justify-end gap-2 p-4">
+              {recordingKind === "video" ? (
+                <button onClick={() => recorder.current?.stop()} className="flex items-center gap-2 rounded-md bg-[#c4314b] px-4 py-2 font-medium text-white">
+                  <Square size={16} />Stop recording
+                </button>
+              ) : (
+                <>
+                  <button onClick={discardRecordingPreview} className="rounded-md border border-slate-300 px-4 py-2 font-medium">
+                    Delete
+                  </button>
+                  <button onClick={rerecordVideoMessage} className="rounded-md border border-[#6264a7] px-4 py-2 font-medium text-[#464775]">
+                    Re-record
+                  </button>
+                  <button onClick={sendRecordingPreview} className="rounded-md bg-[#6264a7] px-4 py-2 font-medium text-white">
+                    Send video
+                  </button>
+                </>
+              )}
+            </div>
+          </section>
         </div>
       )}
     </main>
