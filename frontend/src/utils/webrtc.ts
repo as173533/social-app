@@ -44,6 +44,23 @@ export class WebRTCClient {
     return this.localStream;
   }
 
+  async startScreenShare(): Promise<MediaStream> {
+    const displayStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+    const screenTrack = displayStream.getVideoTracks()[0];
+    if (!screenTrack) {
+      throw new Error("Screen share did not provide a video track");
+    }
+    if (this.peer) {
+      const sender = this.peer.getSenders().find((item) => item.track?.kind === "video");
+      if (sender) {
+        await sender.replaceTrack(screenTrack);
+      } else {
+        this.peer.addTrack(screenTrack, displayStream);
+      }
+    }
+    return displayStream;
+  }
+
   ensurePeer(peerId: number): RTCPeerConnection {
     if (this.peer) {
       return this.peer;

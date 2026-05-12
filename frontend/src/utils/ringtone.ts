@@ -1,9 +1,12 @@
 export class RingtonePlayer {
   private audio: HTMLAudioElement | null = null;
+  private tone: "ringtone" | "caller" = "ringtone";
 
-  private ensureAudio(): HTMLAudioElement {
-    if (!this.audio) {
-      this.audio = new Audio(this.createRingtoneUrl());
+  private ensureAudio(tone: "ringtone" | "caller" = this.tone): HTMLAudioElement {
+    if (!this.audio || this.tone !== tone) {
+      this.stop();
+      this.tone = tone;
+      this.audio = new Audio(this.createRingtoneUrl(tone));
       this.audio.loop = true;
       this.audio.preload = "auto";
       this.audio.volume = 0.8;
@@ -28,8 +31,8 @@ export class RingtonePlayer {
     }
   }
 
-  async start() {
-    const audio = this.ensureAudio();
+  async start(tone: "ringtone" | "caller" = "ringtone") {
+    const audio = this.ensureAudio(tone);
     if (!audio.paused) return;
     audio.currentTime = 0;
     await audio.play();
@@ -41,7 +44,7 @@ export class RingtonePlayer {
     this.audio.currentTime = 0;
   }
 
-  private createRingtoneUrl(): string {
+  private createRingtoneUrl(tone: "ringtone" | "caller"): string {
     const sampleRate = 44100;
     const seconds = 1.4;
     const samples = Math.floor(sampleRate * seconds);
@@ -71,8 +74,10 @@ export class RingtonePlayer {
 
     for (let i = 0; i < samples; i += 1) {
       const t = i / sampleRate;
-      const active = t < 0.45 || (t > 0.7 && t < 1.05);
-      const wave = active ? (Math.sin(2 * Math.PI * 440 * t) + Math.sin(2 * Math.PI * 554.37 * t)) * 0.35 : 0;
+      const active = tone === "caller" ? t < 0.25 || (t > 0.45 && t < 0.7) : t < 0.45 || (t > 0.7 && t < 1.05);
+      const base = tone === "caller" ? 392 : 440;
+      const harmony = tone === "caller" ? 493.88 : 554.37;
+      const wave = active ? (Math.sin(2 * Math.PI * base * t) + Math.sin(2 * Math.PI * harmony * t)) * 0.35 : 0;
       view.setInt16(44 + i * 2, Math.max(-1, Math.min(1, wave)) * 0x7fff, true);
     }
 

@@ -73,7 +73,7 @@ export function AppShell() {
             <MessageCircle size={21} />
           </div>
           <div>
-            <h1 className="text-base font-semibold">Teams Chat</h1>
+            <h1 className="text-base font-semibold">Chat Messenger</h1>
             <p className="text-xs text-[#dadaf2]">{user?.name}</p>
           </div>
         </div>

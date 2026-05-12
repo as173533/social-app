@@ -1,4 +1,4 @@
-import { Check, FileUp, Image, Laugh, Maximize2, MessageSquare, Mic, Minimize2, Paperclip, Phone, PhoneOff, Search, Send, SlidersHorizontal, Speaker, Square, UserPlus, Users, Video, X } from "lucide-react";
+import { Check, FileUp, Image, Laugh, Maximize2, MessageSquare, Mic, Minimize2, MonitorUp, Paperclip, Phone, PhoneOff, RefreshCcw, Search, Send, SlidersHorizontal, Speaker, Square, UserPlus, Users, Video, X } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { API_URL, WS_URL } from "../api/client";
 import { chatApi, friendApi, userApi } from "../api/services";
@@ -45,15 +45,31 @@ function isCallEvent(message: Message): boolean {
   return message.body.startsWith("__call__:");
 }
 
-function callEventText(body: string): string {
-  const [, callType, action] = body.split(":");
+function formatCallEventTime(value: string): string {
+  return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(new Date(value));
+}
+
+function formatCallDuration(totalSeconds: number): string {
+  const safeSeconds = Math.max(0, totalSeconds);
+  const minutes = Math.floor(safeSeconds / 60);
+  const seconds = safeSeconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function callEventText(message: Message): string {
+  const [, callType, action, state, durationSeconds] = message.body.split(":");
   const label = callType === "video" ? "Video call" : "Audio call";
-  return action === "start" ? `${label} started` : `${label} ended`;
+  if (action === "start") {
+    return `${label} started at ${formatCallEventTime(message.created_at)}`;
+  }
+  const duration = Number.parseInt(durationSeconds ?? "0", 10);
+  const stateLabel = state === "missed" ? "ended" : "ended";
+  return `${label} ${stateLabel} at ${formatCallEventTime(message.created_at)} - Duration ${formatCallDuration(Number.isFinite(duration) ? duration : 0)}`;
 }
 
 function messagePreview(message?: Message, currentUserId?: number): string {
   if (!message) return "No messages yet";
-  if (isCallEvent(message)) return callEventText(message.body);
+  if (isCallEvent(message)) return callEventText(message);
   if (message.message_type === "image") return `${message.sender_id === currentUserId ? "You: " : ""}Photo`;
   if (message.message_type === "audio") return `${message.sender_id === currentUserId ? "You: " : ""}Voice message`;
   if (message.message_type === "video") return `${message.sender_id === currentUserId ? "You: " : ""}Video message`;
@@ -81,11 +97,13 @@ export function MessengerPage() {
   const [searchError, setSearchError] = useState("");
   const [activeView, setActiveView] = useState<"chat" | "people">("chat");
   const [showEmojiPanel, setShowEmojiPanel] = useState(false);
+  const [emojiTab, setEmojiTab] = useState<"all" | "emoji" | "gifs">("all");
   const [showMobileDevices, setShowMobileDevices] = useState(false);
   const [typingUserId, setTypingUserId] = useState<number | null>(null);
   const [composerError, setComposerError] = useState("");
   const [uploading, setUploading] = useState(false);
   const [recordingKind, setRecordingKind] = useState<"audio" | "video" | null>(null);
+  const [screenSharing, setScreenSharing] = useState(false);
   const [activeCall, setActiveCall] = useState<CallLog | null>(null);
   const [callError, setCallError] = useState("");
   const [callMinimized, setCallMinimized] = useState(false);
@@ -107,17 +125,20 @@ export function MessengerPage() {
   const localVideo = useRef<HTMLVideoElement | null>(null);
   const remoteVideo = useRef<HTMLVideoElement | null>(null);
   const remoteAudio = useRef<HTMLAudioElement | null>(null);
+  const screenStream = useRef<MediaStream | null>(null);
   const fileInput = useRef<HTMLInputElement | null>(null);
   const mediaInput = useRef<HTMLInputElement | null>(null);
   const messagesContainer = useRef<HTMLDivElement | null>(null);
   const messagesEnd = useRef<HTMLDivElement | null>(null);
   const typingTimer = useRef<number | null>(null);
+  const callTimeoutTimer = useRef<number | null>(null);
   const recorder = useRef<MediaRecorder | null>(null);
   const recordedChunks = useRef<Blob[]>([]);
   const audioOutputIdRef = useRef(audioOutputId);
   const activeCallRef = useRef<CallLog | null>(activeCall);
   const localStreamRef = useRef<MediaStream | null>(localStream);
   const closedCallIds = useRef<Set<number>>(new Set());
+  const callEndMessageSentIds = useRef<Set<number>>(new Set());
 
   const peer = selected?.peer ?? null;
   const incomingRequests = useMemo(
@@ -133,9 +154,16 @@ export function MessengerPage() {
     () => new Set(requests.filter((request) => request.receiver_id === user?.id && request.status === "pending").map((request) => request.sender_id)),
     [requests, user?.id]
   );
-  const emojiOptions = ["😀", "😂", "😍", "👍", "🙏", "🎉", "❤️", "🔥"];
-  const stickerOptions = ["🌟", "💯", "👏", "🙌"];
-  const gifOptions = ["✨ Great!", "🎊 Congrats!", "😂 LOL", "🔥 Nice!"];
+  const emojiOptions = ["😮", "😢", "😠", "😍", "😎", "🙌", "🤝", "🔥", "🎉", "👀", "💯", "💡"];
+  const stickerOptions = ["🌟", "💯", "👏", "🙌", "🚀", "✅"];
+  const gifOptions = [
+    { label: "Deal with it", value: "😎 Deal with it" },
+    { label: "Nice", value: "🔥 Nice!" },
+    { label: "LOL", value: "😂 LOL" },
+    { label: "Congrats", value: "🎊 Congrats!" },
+    { label: "On it", value: "✅ On it" },
+    { label: "Wow", value: "😮 Wow!" }
+  ];
   const callPeerId = activeCall ? (activeCall.caller_id === user?.id ? activeCall.callee_id : activeCall.caller_id) : null;
   const callPeer = callPeerId ? friends.find((friend) => friend.user.id === callPeerId)?.user : null;
 
@@ -153,13 +181,29 @@ export function MessengerPage() {
     return `${String(minutes).padStart(2, "0")}:${String(remainingSeconds).padStart(2, "0")}`;
   };
 
+  const callDurationSeconds = (call: CallLog) =>
+    Math.max(0, Math.floor((Date.now() - new Date(call.started_at).getTime()) / 1000));
+
+  const selectedMatchesCall = (call: CallLog) => {
+    if (!selected || !user) return false;
+    const peerId = call.caller_id === user.id ? call.callee_id : call.caller_id;
+    return selected.user1_id === peerId || selected.user2_id === peerId || selected.peer?.id === peerId;
+  };
+
   const cleanupCallMedia = () => {
+    if (callTimeoutTimer.current) {
+      window.clearTimeout(callTimeoutTimer.current);
+      callTimeoutTimer.current = null;
+    }
     ringtone.current.stop();
     rtc.current?.close();
+    screenStream.current?.getTracks().forEach((track) => track.stop());
+    screenStream.current = null;
     setLocalStream(null);
     setRemoteStream(null);
     setPendingOffer(null);
     setCallMinimized(false);
+    setScreenSharing(false);
   };
 
   const loadAll = async () => {
@@ -281,6 +325,29 @@ export function MessengerPage() {
     media?.play().catch(() => setCallError("Remote audio is blocked. Click inside the page once, then reconnect the call."));
   };
 
+  const bindLocalVideo = (element: HTMLVideoElement | null) => {
+    localVideo.current = element;
+    if (element && localStream) {
+      element.srcObject = localStream;
+    }
+  };
+
+  const bindRemoteVideo = (element: HTMLVideoElement | null) => {
+    remoteVideo.current = element;
+    if (element && remoteStream) {
+      element.srcObject = remoteStream;
+      element.play().catch(() => undefined);
+    }
+  };
+
+  const bindRemoteAudio = (element: HTMLAudioElement | null) => {
+    remoteAudio.current = element;
+    if (element && remoteStream) {
+      element.srcObject = remoteStream;
+      element.play().catch(() => undefined);
+    }
+  };
+
   const acceptIncomingOffer = async (fromUserId: number, sdp: RTCSessionDescriptionInit) => {
     const call = activeCallRef.current;
     if (call?.id && closedCallIds.current.has(call.id)) return;
@@ -319,6 +386,32 @@ export function MessengerPage() {
     const intervalId = window.setInterval(() => setCallTick((value) => value + 1), 1000);
     return () => window.clearInterval(intervalId);
   }, [activeCall?.id, activeCall?.state]);
+
+  useEffect(() => {
+    if (!activeCall || !user || activeCall.state !== "ringing" || activeCall.caller_id !== user.id) {
+      if (callTimeoutTimer.current) {
+        window.clearTimeout(callTimeoutTimer.current);
+        callTimeoutTimer.current = null;
+      }
+      return;
+    }
+    callTimeoutTimer.current = window.setTimeout(() => {
+      const currentCall = activeCallRef.current;
+      if (!currentCall || currentCall.id !== activeCall.id || currentCall.state !== "ringing") return;
+      sendCallEndMessage(currentCall, "missed");
+      sendSocketPayload(callSocket.current, { type: "call:state", call_id: currentCall.id, state: "missed" });
+      closedCallIds.current.add(currentCall.id);
+      setActiveCall(null);
+      activeCallRef.current = null;
+      cleanupCallMedia();
+    }, 60000);
+    return () => {
+      if (callTimeoutTimer.current) {
+        window.clearTimeout(callTimeoutTimer.current);
+        callTimeoutTimer.current = null;
+      }
+    };
+  }, [activeCall?.id, activeCall?.state, activeCall?.caller_id, user?.id]);
 
   useEffect(() => {
     if (!accessToken) return;
@@ -399,6 +492,9 @@ export function MessengerPage() {
         const callFinished = payload.call.state === "ended" || payload.call.state === "rejected" || payload.call.state === "missed";
         if (callFinished) {
           closedCallIds.current.add(payload.call.id);
+          if (payload.call.caller_id === user?.id) {
+            sendCallEndMessage(payload.call, payload.call.state);
+          }
         } else {
           closedCallIds.current.delete(payload.call.id);
         }
@@ -408,11 +504,17 @@ export function MessengerPage() {
           cleanupCallMedia();
         }
         const isIncomingRinging = payload.call.state === "ringing" && payload.call.callee_id === user?.id;
+        const isOutgoingRinging = payload.call.state === "ringing" && payload.call.caller_id === user?.id;
         if (isIncomingRinging) {
           ringtone.current
             .setOutputDevice(audioOutputIdRef.current)
             .then(() => ringtone.current.start())
             .catch(() => setCallError("Incoming call sound is blocked. Click Enable call sound once."));
+        } else if (isOutgoingRinging) {
+          ringtone.current
+            .setOutputDevice(audioOutputIdRef.current)
+            .then(() => ringtone.current.start("caller"))
+            .catch(() => setCallError("Caller tune is blocked. Click Enable call sound once."));
         } else {
           ringtone.current.stop();
         }
@@ -502,6 +604,7 @@ export function MessengerPage() {
     if (remoteVideo.current && remoteStream) remoteVideo.current.srcObject = remoteStream;
     if (remoteAudio.current && remoteStream) remoteAudio.current.srcObject = remoteStream;
     if (remoteStream) {
+      remoteVideo.current?.play().catch(() => undefined);
       playRemoteMedia();
       scrollMessagesToBottom("auto");
     }
@@ -555,6 +658,15 @@ export function MessengerPage() {
   const sendCallEventMessage = (callType: "audio" | "video", action: "start" | "end") => {
     if (!selected) return;
     sendChatMessage({ body: `__call__:${callType}:${action}`, message_type: "call" });
+  };
+
+  const sendCallEndMessage = (call: CallLog, state: CallLog["state"] = "ended") => {
+    if (callEndMessageSentIds.current.has(call.id) || !selectedMatchesCall(call)) return;
+    callEndMessageSentIds.current.add(call.id);
+    sendChatMessage({
+      body: `__call__:${call.call_type}:end:${state}:${callDurationSeconds(call)}`,
+      message_type: "call"
+    });
   };
 
   const sendUploadedAttachment = async (attachment: UploadedAttachment, caption = "") => {
@@ -626,6 +738,68 @@ export function MessengerPage() {
     }
   };
 
+  const switchCamera = async () => {
+    if (!activeCall || activeCall.state !== "accepted") return;
+    setCallError("");
+    try {
+      await loadDevices();
+      const cameras = videoInputs.length ? videoInputs : (await navigator.mediaDevices.enumerateDevices()).filter((device) => device.kind === "videoinput");
+      if (cameras.length <= 1) {
+        setCallError("No second camera was found.");
+        return;
+      }
+      const currentIndex = Math.max(0, cameras.findIndex((device) => device.deviceId === videoInputId));
+      const next = cameras[(currentIndex + 1) % cameras.length];
+      setVideoInputId(next.deviceId);
+      const stream = await rtc.current?.startLocal(true, { audioInputId, videoInputId: next.deviceId });
+      if (stream) {
+        screenStream.current?.getTracks().forEach((track) => track.stop());
+        screenStream.current = null;
+        setScreenSharing(false);
+        setLocalStream(stream);
+        if (callPeerId) await rtc.current?.createOffer(callPeerId);
+      }
+    } catch {
+      setCallError("Could not switch camera. Check camera permission and try again.");
+    }
+  };
+
+  const toggleScreenShare = async () => {
+    if (!activeCall || activeCall.state !== "accepted") return;
+    setCallError("");
+    if (screenSharing) {
+      try {
+        screenStream.current?.getTracks().forEach((track) => track.stop());
+        screenStream.current = null;
+        setScreenSharing(false);
+        const stream = await rtc.current?.startLocal(activeCall.call_type === "video", { audioInputId, videoInputId });
+        if (stream) setLocalStream(stream);
+      } catch {
+        setCallError("Could not return to camera.");
+      }
+      return;
+    }
+    try {
+      const stream = await rtc.current?.startScreenShare();
+      if (stream) {
+        screenStream.current = stream;
+        setScreenSharing(true);
+        setLocalStream(stream);
+        if (callPeerId) await rtc.current?.createOffer(callPeerId);
+        stream.getVideoTracks()[0]?.addEventListener("ended", () => {
+          setScreenSharing(false);
+          screenStream.current = null;
+          rtc.current?.startLocal(activeCall.call_type === "video", { audioInputId, videoInputId }).then(async (nextStream) => {
+            setLocalStream(nextStream);
+            if (callPeerId) await rtc.current?.createOffer(callPeerId);
+          }).catch(() => undefined);
+        });
+      }
+    } catch {
+      setCallError("Screen share was cancelled or blocked.");
+    }
+  };
+
   const startCall = async (callType: "audio" | "video") => {
     if (!peer) return;
     setCallError("");
@@ -643,6 +817,10 @@ export function MessengerPage() {
         setCallError("Call connection is still starting. Try again in a moment.");
         return;
       }
+      ringtone.current
+        .setOutputDevice(audioOutputIdRef.current)
+        .then(() => ringtone.current.start("caller"))
+        .catch(() => setCallError("Caller tune is blocked. Click Enable call sound once."));
       sendCallEventMessage(callType, "start");
       await rtc.current?.createOffer(peer.id);
     } catch (error) {
@@ -654,9 +832,7 @@ export function MessengerPage() {
     if (!activeCall) return;
     const peerId = activeCall.caller_id === user?.id ? activeCall.callee_id : activeCall.caller_id;
     if (state === "ended" || state === "rejected") {
-      if (state === "ended") {
-        sendCallEventMessage(activeCall.call_type, "end");
-      }
+      sendCallEndMessage(activeCall, state);
       closedCallIds.current.add(activeCall.id);
       setActiveCall(null);
       activeCallRef.current = null;
@@ -789,8 +965,33 @@ export function MessengerPage() {
   );
 
   const callPanel = activeCall ? (
+    activeCall.state === "ringing" && activeCall.callee_id === user?.id ? (
+    <div className="overflow-hidden rounded-lg bg-[#4a403d] text-white shadow-2xl shadow-slate-900/35">
+      <div className="flex h-10 items-center justify-between px-3 text-xs">
+        <span className="font-semibold">Chat Messenger</span>
+        <button onClick={() => setCallMinimized(true)} className="grid h-7 w-7 place-items-center rounded-md hover:bg-white/10" title="Minimize">
+          <Minimize2 size={15} />
+        </button>
+      </div>
+      <div className="flex flex-col items-center px-5 pb-4 pt-2 text-center">
+        <div className="grid h-20 w-20 place-items-center overflow-hidden rounded-full bg-[#ffdcd7] text-3xl font-semibold text-[#8a3f34] shadow-lg">
+          {callPeer?.avatar ? <img src={avatarSrc(callPeer.avatar)} alt={callPeer.name} className="h-full w-full object-cover" /> : (callPeer?.name ?? "C").slice(0, 1).toUpperCase()}
+        </div>
+        <h2 className="mt-3 max-w-full truncate text-sm font-semibold">{callPeer?.name ?? "Incoming call"}</h2>
+        <p className="text-sm text-white/90">is calling you</p>
+        <div className="mt-4 grid w-full grid-cols-2 gap-2">
+          <button onClick={() => setCallState("accepted")} className="flex items-center justify-center gap-2 rounded-md bg-[#5b5fc7] py-2.5 font-semibold hover:bg-[#4f52b2]">
+            <Phone size={17} />Accept
+          </button>
+          <button onClick={() => setCallState("rejected")} className="flex items-center justify-center gap-2 rounded-md bg-[#d13438] py-2.5 font-semibold hover:bg-[#b92d31]">
+            <PhoneOff size={17} />Reject
+          </button>
+        </div>
+      </div>
+    </div>
+    ) : (
     <div className={callMinimized ? "rounded-lg border border-[#d1d1e0] bg-white p-2 shadow-2xl shadow-slate-900/20" : "flex h-full flex-col overflow-hidden rounded-lg border border-[#d1d1e0] bg-white shadow-2xl shadow-slate-900/25"}>
-      <audio ref={remoteAudio} autoPlay />
+      <audio ref={bindRemoteAudio} autoPlay />
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-[#ddddec] bg-white px-3">
         <div className="min-w-0">
           <h2 className="truncate text-sm font-semibold">{callPeer?.name ?? "Call"}</h2>
@@ -813,8 +1014,11 @@ export function MessengerPage() {
               <button className="grid h-9 w-9 place-items-center rounded-md text-[#464775] hover:bg-[#ededfa]" title="Microphone">
                 <Mic size={17} />
               </button>
-              <button className="grid h-9 w-9 place-items-center rounded-md text-[#464775] hover:bg-[#ededfa]" title="Camera">
-                <Video size={17} />
+              <button onClick={switchCamera} className="grid h-9 w-9 place-items-center rounded-md text-[#464775] hover:bg-[#ededfa]" title="Switch camera">
+                <RefreshCcw size={16} />
+              </button>
+              <button onClick={toggleScreenShare} className={`grid h-9 w-9 place-items-center rounded-md ${screenSharing ? "bg-[#6264a7] text-white" : "text-[#464775] hover:bg-[#ededfa]"}`} title={screenSharing ? "Stop sharing" : "Share screen"}>
+                <MonitorUp size={17} />
               </button>
             </>
           )}
@@ -849,7 +1053,7 @@ export function MessengerPage() {
       ) : (
         <div className="relative min-h-0 flex-1 overflow-hidden bg-[#f7f8fb]">
           {activeCall.state === "accepted" && activeCall.call_type === "video" && remoteStream ? (
-            <video ref={remoteVideo} autoPlay playsInline className="h-full w-full bg-slate-950 object-cover" />
+            <video ref={bindRemoteVideo} autoPlay playsInline className="h-full w-full bg-slate-950 object-cover" />
           ) : (
             <div className="flex h-full flex-col items-center justify-center bg-gradient-to-br from-[#f8fafc] via-[#eef6ef] to-[#e7f3f6] p-6 text-center">
               <div className="grid h-36 w-36 place-items-center overflow-hidden rounded-full bg-[#c7d5e8] text-6xl font-semibold text-[#123a63] shadow-sm sm:h-44 sm:w-44">
@@ -866,7 +1070,7 @@ export function MessengerPage() {
           </div>
           <div className="absolute bottom-4 right-4 h-32 w-44 overflow-hidden rounded-lg border border-white/70 bg-[#e8f7f4] shadow-xl">
             {activeCall.call_type === "video" && localStream ? (
-              <video ref={localVideo} muted autoPlay playsInline className="h-full w-full object-cover" />
+              <video ref={bindLocalVideo} muted autoPlay playsInline className="h-full w-full object-cover" />
             ) : (
               <div className="grid h-full place-items-center">
                 <div className="grid h-16 w-16 place-items-center overflow-hidden rounded-full bg-[#c7d5e8] text-xl font-semibold text-[#123a63]">
@@ -883,6 +1087,7 @@ export function MessengerPage() {
         </div>
       )}
     </div>
+    )
   ) : null;
 
   return (
@@ -1078,7 +1283,7 @@ export function MessengerPage() {
                   return (
                     <div key={message.id} className="flex justify-center">
                       <span className="rounded-md bg-white px-3 py-1.5 text-xs font-medium text-slate-600 shadow-sm">
-                        {callEventText(message.body)}
+                        {callEventText(message)}
                       </span>
                     </div>
                   );
@@ -1117,25 +1322,69 @@ export function MessengerPage() {
             </div>
             <form onSubmit={sendMessage} className="relative border-t border-[#ddddec] bg-white p-3 sm:p-4">
               {showEmojiPanel && (
-                <div className="absolute bottom-[76px] left-3 z-20 w-[min(520px,calc(100vw-2rem))] rounded-lg border border-[#d1d1e0] bg-white p-3 shadow-xl">
-                  <div className="grid grid-cols-8 gap-2">
-                    {emojiOptions.map((emoji) => (
-                      <button key={emoji} type="button" onClick={() => setBody((value) => `${value}${emoji}`)} className="grid h-10 place-items-center rounded-md text-2xl hover:bg-[#ededfa]">
-                        {emoji}
+                <div className="absolute bottom-[76px] right-3 z-20 w-[min(320px,calc(100vw-2rem))] overflow-hidden rounded-lg border border-[#d1d1e0] bg-white shadow-2xl">
+                  <div className="grid grid-cols-3 border-b border-[#e6e6f2] text-sm">
+                    {(["all", "emoji", "gifs"] as const).map((tab) => (
+                      <button
+                        key={tab}
+                        type="button"
+                        onClick={() => setEmojiTab(tab)}
+                        className={`py-3 font-medium capitalize ${emojiTab === tab ? "border-b-2 border-[#6264a7] text-slate-900" : "text-slate-500 hover:bg-[#f7f7fc]"}`}
+                      >
+                        {tab === "gifs" ? "GIFs" : tab}
                       </button>
                     ))}
                   </div>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {stickerOptions.map((sticker) => (
-                      <button key={sticker} type="button" onClick={() => sendQuickMessage(sticker, "sticker")} className="rounded-md bg-[#ededfa] px-3 py-2 text-2xl">
-                        {sticker}
-                      </button>
-                    ))}
-                    {gifOptions.map((gif) => (
-                      <button key={gif} type="button" onClick={() => sendQuickMessage(gif, "gif")} className="rounded-md border border-[#d1d1e0] px-3 py-2 text-sm font-medium">
-                        {gif}
-                      </button>
-                    ))}
+                  <div className="p-3">
+                    <div className="relative">
+                      <Search className="absolute right-3 top-2.5 text-slate-400" size={16} />
+                      <input className="w-full rounded-md border border-[#d1d1e0] py-2 pl-3 pr-9 text-sm outline-none focus:border-[#6264a7]" placeholder="Find something fun" />
+                    </div>
+                    {(emojiTab === "all" || emojiTab === "emoji") && (
+                      <>
+                        <div className="mt-3 flex items-center justify-between text-sm">
+                          <span className="font-medium text-slate-700">Emoji</span>
+                          <button type="button" onClick={() => setEmojiTab("emoji")} className="text-xs text-slate-500">See all</button>
+                        </div>
+                        <div className="mt-2 grid grid-cols-6 gap-2">
+                          {emojiOptions.map((emoji) => (
+                            <button key={emoji} type="button" onClick={() => setBody((value) => `${value}${emoji}`)} className="grid h-10 place-items-center rounded-md text-2xl hover:bg-[#ededfa]">
+                              {emoji}
+                            </button>
+                          ))}
+                        </div>
+                        <div className="mt-3 grid grid-cols-6 gap-2">
+                          {stickerOptions.map((sticker) => (
+                            <button key={sticker} type="button" onClick={() => sendQuickMessage(sticker, "sticker")} className="grid h-11 place-items-center rounded-md bg-[#f1f1fb] text-2xl hover:bg-[#e4e4f6]">
+                              {sticker}
+                            </button>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                    {(emojiTab === "all" || emojiTab === "gifs") && (
+                      <>
+                        <div className="mt-3 flex items-center justify-between text-sm">
+                          <span className="font-medium text-slate-700">GIFs</span>
+                          <button type="button" onClick={() => setEmojiTab("gifs")} className="text-xs text-slate-500">See all</button>
+                        </div>
+                        <div className="mt-2 grid grid-cols-3 gap-2">
+                          {gifOptions.map((gif, index) => (
+                            <button
+                              key={gif.value}
+                              type="button"
+                              onClick={() => sendQuickMessage(gif.value, "gif")}
+                              className={`grid h-20 place-items-center rounded-md p-2 text-center text-xs font-semibold text-white ${
+                                index % 3 === 0 ? "bg-[#6264a7]" : index % 3 === 1 ? "bg-[#0f766e]" : "bg-[#c4314b]"
+                              }`}
+                            >
+                              {gif.label}
+                            </button>
+                          ))}
+                        </div>
+                        <p className="mt-3 text-center text-[11px] text-slate-500">GIFs powered by local presets</p>
+                      </>
+                    )}
                   </div>
                 </div>
               )}
@@ -1220,7 +1469,9 @@ export function MessengerPage() {
       {callPanel && (
         <div
           className={
-            callMinimized
+            activeCall?.state === "ringing" && activeCall.callee_id === user?.id
+              ? "fixed bottom-16 right-4 z-50 w-[calc(100vw-2rem)] max-w-[360px]"
+              : callMinimized
               ? "fixed bottom-4 right-4 z-50 w-[calc(100vw-2rem)] max-w-[340px]"
               : "fixed inset-x-3 top-16 z-50 h-[calc(100dvh-5rem)] overflow-hidden sm:inset-x-8 lg:inset-x-[11vw] xl:inset-x-[12vw]"
           }

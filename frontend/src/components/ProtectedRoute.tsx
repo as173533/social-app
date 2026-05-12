@@ -6,3 +6,8 @@ export function ProtectedRoute({ children }: { children: ReactNode }) {
   const token = useAuthStore((state) => state.accessToken);
   return token ? children : <Navigate to="/login" replace />;
 }
+
+export function PublicRoute({ children }: { children: ReactNode }) {
+  const token = useAuthStore((state) => state.accessToken);
+  return token ? <Navigate to="/app" replace /> : children;
+}
