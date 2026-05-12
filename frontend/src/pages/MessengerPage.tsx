@@ -1,4 +1,4 @@
-import { Bell, Check, ChevronDown, FileUp, Grid2X2, Image, Laugh, Maximize2, MessageSquare, Mic, MicOff, Minimize2, MonitorUp, MoreHorizontal, Paperclip, Phone, PhoneOff, RefreshCcw, Search, Send, Shield, SlidersHorizontal, Speaker, Square, UserPlus, Users, Video, VideoOff, Volume2, X } from "lucide-react";
+import { Bell, Check, ChevronDown, Copy, Edit3, FileUp, Forward, Grid2X2, Image, Languages, Laugh, Link as LinkIcon, Maximize2, MessageSquare, Mic, MicOff, Minimize2, MonitorUp, MoreHorizontal, Paperclip, Phone, PhoneOff, Pin, RefreshCcw, Reply, Search, Send, Shield, SlidersHorizontal, Speaker, Square, Trash2, UserPlus, Users, Video, VideoOff, Volume2, X } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { API_URL, WS_URL } from "../api/client";
@@ -114,6 +114,9 @@ export function MessengerPage() {
   const [callHistory, setCallHistory] = useState<CallLog[]>([]);
   const [selected, setSelected] = useState<Conversation | null>(null);
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
+  const [messageMenu, setMessageMenu] = useState<{ message: Message; x: number; y: number } | null>(null);
+  const [pinnedMessageIds, setPinnedMessageIds] = useState<number[]>([]);
+  const [locallyUnreadIds, setLocallyUnreadIds] = useState<number[]>([]);
   const [showGroupModal, setShowGroupModal] = useState(false);
   const [groupTitle, setGroupTitle] = useState("");
   const [groupMemberIds, setGroupMemberIds] = useState<number[]>([]);
@@ -698,6 +701,17 @@ export function MessengerPage() {
   }, [audioOutputId]);
 
   useEffect(() => {
+    if (!messageMenu) return;
+    const closeMenu = () => setMessageMenu(null);
+    window.addEventListener("pointerdown", closeMenu);
+    window.addEventListener("scroll", closeMenu, true);
+    return () => {
+      window.removeEventListener("pointerdown", closeMenu);
+      window.removeEventListener("scroll", closeMenu, true);
+    };
+  }, [messageMenu]);
+
+  useEffect(() => {
     if (!accessToken) return;
     let disposed = false;
     let chatReconnectTimer: number | undefined;
@@ -1030,6 +1044,32 @@ export function MessengerPage() {
     if (Math.abs(event.clientX - swipe.x) > 70) {
       setReplyingTo(message);
     }
+  };
+
+  const openMessageMenu = (message: Message, event: React.MouseEvent<HTMLElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setMessageMenu({ message, x: event.clientX, y: event.clientY });
+  };
+
+  const copyMessageText = async (message: Message) => {
+    await navigator.clipboard?.writeText(message.body || message.attachment_url || "");
+    setMessageMenu(null);
+  };
+
+  const copyMessageLink = async (message: Message) => {
+    await navigator.clipboard?.writeText(`${window.location.origin}/app/chat/${message.conversation_id}?message=${message.id}`);
+    setMessageMenu(null);
+  };
+
+  const pinMessage = (message: Message) => {
+    setPinnedMessageIds((current) => current.includes(message.id) ? current : [...current, message.id]);
+    setMessageMenu(null);
+  };
+
+  const markMessageUnread = (message: Message) => {
+    setLocallyUnreadIds((current) => current.includes(message.id) ? current : [...current, message.id]);
+    setMessageMenu(null);
   };
 
   const createGroup = async () => {
@@ -1941,6 +1981,18 @@ export function MessengerPage() {
               </div>
             )}
             <div ref={messagesContainer} className="flex-1 space-y-3 overflow-y-auto bg-[#f5f5fb] p-4">
+              {pinnedMessageIds.length > 0 && (
+                <div className="sticky top-0 z-10 rounded-md border border-[#ddddec] bg-white/95 p-2 text-xs shadow-sm backdrop-blur">
+                  <p className="font-semibold text-slate-700">Pinned</p>
+                  <div className="mt-1 space-y-1">
+                    {messages.filter((message) => pinnedMessageIds.includes(message.id)).slice(-3).map((message) => (
+                      <button key={message.id} type="button" onClick={() => setReplyingTo(message)} className="block w-full truncate rounded bg-[#f7f7fc] px-2 py-1 text-left text-slate-600">
+                        {messageSummary(message)}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
               {messages.map((rawMessage) => {
                 const message = normalizeMessage(rawMessage);
                 if (isCallEvent(message)) {
@@ -1958,8 +2010,17 @@ export function MessengerPage() {
                     <div
                       onPointerDown={(event) => startMessageSwipe(message, event)}
                       onPointerUp={(event) => endMessageSwipe(message, event)}
-                      className={`group max-w-[78%] rounded-md px-3.5 py-2 text-sm shadow-sm ${mine ? "bg-[#6264a7] text-white" : "bg-white text-slate-900"}`}
+                      onContextMenu={(event) => openMessageMenu(message, event)}
+                      className={`group relative max-w-[78%] rounded-md px-3.5 py-2 text-sm shadow-sm ${locallyUnreadIds.includes(message.id) ? "ring-2 ring-[#6264a7]/40" : ""} ${mine ? "bg-[#6264a7] text-white" : "bg-white text-slate-900"}`}
                     >
+                      <button
+                        type="button"
+                        onClick={(event) => openMessageMenu(message, event)}
+                        className={`absolute -top-3 ${mine ? "left-2" : "right-2"} grid h-7 w-7 place-items-center rounded-full bg-white text-[#464775] opacity-0 shadow-md transition group-hover:opacity-100`}
+                        title="Message actions"
+                      >
+                        <MoreHorizontal size={17} />
+                      </button>
                       {message.reply_to && (
                         <button
                           type="button"
@@ -2286,6 +2347,44 @@ export function MessengerPage() {
               </button>
             </div>
           </section>
+        </div>
+      )}
+      {messageMenu && (
+        <div
+          className="fixed z-[95] w-64 overflow-hidden rounded-md border border-[#ddddec] bg-white py-2 text-sm text-slate-700 shadow-2xl"
+          style={{
+            left: Math.min(messageMenu.x, window.innerWidth - 272),
+            top: Math.min(messageMenu.y, window.innerHeight - 360)
+          }}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          {[
+            { label: "Reply", icon: <Reply size={17} />, action: () => { setReplyingTo(messageMenu.message); setMessageMenu(null); } },
+            { label: "Forward", icon: <Forward size={17} />, action: () => { setReplyingTo(messageMenu.message); setMessageMenu(null); } },
+            { label: "Copy text", icon: <Copy size={17} />, action: () => copyMessageText(messageMenu.message) },
+            { label: "Copy link", icon: <LinkIcon size={17} />, action: () => copyMessageLink(messageMenu.message) },
+            { label: "Edit", icon: <Edit3 size={17} />, action: () => { if (messageMenu.message.sender_id === user?.id && !messageMenu.message.deleted_for_everyone) setBody(messageMenu.message.body); setMessageMenu(null); } },
+            { label: "Delete for me", icon: <Trash2 size={17} />, action: () => { deleteMessage(messageMenu.message, "me"); setMessageMenu(null); } },
+            ...(messageMenu.message.sender_id === user?.id && !messageMenu.message.deleted_for_everyone
+              ? [{ label: "Delete for everyone", icon: <Trash2 size={17} />, action: () => { deleteMessage(messageMenu.message, "everyone"); setMessageMenu(null); } }]
+              : []),
+            { label: "Pin", icon: <Pin size={17} />, action: () => pinMessage(messageMenu.message) },
+            { label: "Mark as unread", icon: <Bell size={17} />, action: () => markMessageUnread(messageMenu.message) },
+            { label: "Translation", icon: <Languages size={17} />, action: () => setMessageMenu(null) }
+          ].map((item) => (
+            <button key={item.label} type="button" onClick={item.action} className="flex w-full items-center gap-3 px-4 py-2.5 text-left hover:bg-[#f5f5fb]">
+              {item.icon}
+              <span className="flex-1">{item.label}</span>
+              {item.label === "Translation" && <ChevronDown size={15} className="-rotate-90" />}
+            </button>
+          ))}
+          <div className="mt-1 flex items-center justify-between border-t border-[#eeeef7] px-3 pt-2 text-lg">
+            {["👍", "❤️", "😂", "😮", "😢"].map((reaction) => (
+              <button key={reaction} type="button" onClick={() => { setBody((value) => `${value}${reaction}`); setMessageMenu(null); }} className="grid h-8 w-8 place-items-center rounded-md hover:bg-[#f5f5fb]">
+                {reaction}
+              </button>
+            ))}
+          </div>
         </div>
       )}
       {recordingPreview && (
