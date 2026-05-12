@@ -31,6 +31,121 @@ type GiphyItem = { id: string; title: string; url: string; preview: string };
 
 const GIPHY_API_KEY = import.meta.env.VITE_GIPHY_API_KEY as string | undefined;
 
+function emojiItems(symbols: string[], labelPrefix: string, keywords: string): EmojiItem[] {
+  return symbols.map((symbol, index) => ({ symbol, label: `${labelPrefix} ${index + 1}`, keywords }));
+}
+
+const WHATSAPP_STYLE_EMOJI_GROUPS: Record<EmojiCategory, EmojiItem[]> = {
+  emoji: emojiItems(
+    [
+      "\u{1F600}", "\u{1F603}", "\u{1F604}", "\u{1F601}", "\u{1F606}", "\u{1F605}", "\u{1F923}", "\u{1F602}",
+      "\u{1F642}", "\u{1F643}", "\u{1FAE0}", "\u{1F609}", "\u{1F60A}", "\u{1F607}", "\u{1F970}", "\u{1F60D}",
+      "\u{1F929}", "\u{1F618}", "\u{1F617}", "\u{263A}\uFE0F", "\u{1F61A}", "\u{1F619}", "\u{1F972}", "\u{1F60B}",
+      "\u{1F61B}", "\u{1F61C}", "\u{1F92A}", "\u{1F61D}", "\u{1F911}", "\u{1F917}", "\u{1F92D}", "\u{1FAE2}",
+      "\u{1FAE3}", "\u{1F92B}", "\u{1F914}", "\u{1FAE1}", "\u{1F910}", "\u{1F928}", "\u{1F610}", "\u{1F611}",
+      "\u{1F636}", "\u{1FAE5}", "\u{1F60F}", "\u{1F612}", "\u{1F644}", "\u{1F62C}", "\u{1F62E}\u200D\u{1F4A8}", "\u{1F925}",
+      "\u{1FAE8}", "\u{1F60C}", "\u{1F614}", "\u{1F62A}", "\u{1F924}", "\u{1F634}", "\u{1F637}", "\u{1F912}",
+      "\u{1F915}", "\u{1F922}", "\u{1F92E}", "\u{1F927}", "\u{1F975}", "\u{1F976}", "\u{1F974}", "\u{1F635}",
+      "\u{1F635}\u200D\u{1F4AB}", "\u{1F92F}", "\u{1F920}", "\u{1F973}", "\u{1F978}", "\u{1F60E}", "\u{1F913}", "\u{1F9D0}",
+      "\u{1F615}", "\u{1FAE4}", "\u{1F61F}", "\u{1F641}", "\u{2639}\uFE0F", "\u{1F62E}", "\u{1F62F}", "\u{1F632}",
+      "\u{1F633}", "\u{1F97A}", "\u{1F979}", "\u{1F626}", "\u{1F627}", "\u{1F628}", "\u{1F630}", "\u{1F625}",
+      "\u{1F622}", "\u{1F62D}", "\u{1F631}", "\u{1F616}", "\u{1F623}", "\u{1F61E}", "\u{1F613}", "\u{1F629}",
+      "\u{1F62B}", "\u{1F971}", "\u{1F624}", "\u{1F621}", "\u{1F620}", "\u{1F92C}", "\u{1F608}", "\u{1F47F}",
+      "\u{1F480}", "\u{1F4A9}", "\u{1F921}", "\u{1F47B}", "\u{1F47D}", "\u{1F916}", "\u{1F63A}", "\u{1F63B}"
+    ],
+    "emoji",
+    "face smile happy laugh love sad angry emotion whatsapp recent"
+  ),
+  gestures: emojiItems(
+    [
+      "\u{1F44B}", "\u{1F91A}", "\u{1F590}\uFE0F", "\u{270B}", "\u{1F596}", "\u{1FAF1}", "\u{1FAF2}", "\u{1FAF3}",
+      "\u{1FAF4}", "\u{1FAF7}", "\u{1FAF8}", "\u{1F44C}", "\u{1F90C}", "\u{1F90F}", "\u{270C}\uFE0F", "\u{1F91E}",
+      "\u{1FAF0}", "\u{1F91F}", "\u{1F918}", "\u{1F919}", "\u{1F448}", "\u{1F449}", "\u{1F446}", "\u{1F595}",
+      "\u{1F447}", "\u{261D}\uFE0F", "\u{1FAF5}", "\u{1F44D}", "\u{1F44E}", "\u{270A}", "\u{1F44A}", "\u{1F91B}",
+      "\u{1F91C}", "\u{1F44F}", "\u{1F64C}", "\u{1FAF6}", "\u{1F450}", "\u{1F932}", "\u{1F91D}", "\u{1F64F}",
+      "\u{270D}\uFE0F", "\u{1F485}", "\u{1F4AA}", "\u{1F9BE}", "\u{1F9BF}", "\u{1F9B5}", "\u{1F9B6}", "\u{1F442}"
+    ],
+    "gesture",
+    "hand gesture thumbs clap pray like dislike whatsapp"
+  ),
+  people: emojiItems(
+    [
+      "\u{1F476}", "\u{1F9D2}", "\u{1F466}", "\u{1F467}", "\u{1F9D1}", "\u{1F468}", "\u{1F469}", "\u{1F9D3}",
+      "\u{1F474}", "\u{1F475}", "\u{1F64D}", "\u{1F64E}", "\u{1F645}", "\u{1F646}", "\u{1F481}", "\u{1F64B}",
+      "\u{1F9CF}", "\u{1F647}", "\u{1F926}", "\u{1F937}", "\u{1F468}\u200D\u{1F4BB}", "\u{1F469}\u200D\u{1F4BB}", "\u{1F9D1}\u200D\u{1F393}", "\u{1F9D1}\u200D\u{2695}\uFE0F",
+      "\u{1F9D1}\u200D\u{1F3EB}", "\u{1F9D1}\u200D\u{1F527}", "\u{1F9D1}\u200D\u{1F4BC}", "\u{1F9D1}\u200D\u{1F680}", "\u{1F46E}", "\u{1F575}\uFE0F",
+      "\u{1F482}", "\u{1F477}", "\u{1F934}", "\u{1F478}", "\u{1F470}", "\u{1F935}", "\u{1F930}", "\u{1F931}",
+      "\u{1F9D1}\u200D\u{1F9BD}", "\u{1F3C3}", "\u{1F6B6}", "\u{1F9CD}", "\u{1F46F}", "\u{1F9D8}", "\u{1F6CC}", "\u{1F46A}"
+    ],
+    "person",
+    "people person family work face human whatsapp"
+  ),
+  food: emojiItems(
+    [
+      "\u{1F347}", "\u{1F348}", "\u{1F349}", "\u{1F34A}", "\u{1F34B}", "\u{1F34C}", "\u{1F34D}", "\u{1F96D}",
+      "\u{1F34E}", "\u{1F34F}", "\u{1F350}", "\u{1F351}", "\u{1F352}", "\u{1F353}", "\u{1FAD0}", "\u{1F95D}",
+      "\u{1F345}", "\u{1FAD2}", "\u{1F965}", "\u{1F951}", "\u{1F346}", "\u{1F954}", "\u{1F955}", "\u{1F33D}",
+      "\u{1F336}\uFE0F", "\u{1FAD1}", "\u{1F952}", "\u{1F96C}", "\u{1F966}", "\u{1F9C4}", "\u{1F9C5}", "\u{1F344}",
+      "\u{1F95C}", "\u{1FAD8}", "\u{1F35E}", "\u{1F950}", "\u{1F956}", "\u{1FAD3}", "\u{1F968}", "\u{1F96F}",
+      "\u{1F95E}", "\u{1F9C7}", "\u{1F9C0}", "\u{1F356}", "\u{1F357}", "\u{1F969}", "\u{1F953}", "\u{1F354}",
+      "\u{1F35F}", "\u{1F355}", "\u{1F32D}", "\u{1F96A}", "\u{1F32E}", "\u{1F32F}", "\u{1FAD4}", "\u{1F959}",
+      "\u{1F9C6}", "\u{1F95A}", "\u{1F373}", "\u{1F958}", "\u{1F372}", "\u{1F963}", "\u{1F957}", "\u{1F37F}",
+      "\u{1F9C8}", "\u{1F9C2}", "\u{1F96B}", "\u{1F371}", "\u{1F358}", "\u{1F359}", "\u{1F35A}", "\u{1F35B}",
+      "\u{1F35C}", "\u{1F35D}", "\u{1F360}", "\u{1F362}", "\u{1F363}", "\u{1F364}", "\u{1F365}", "\u{1F96E}",
+      "\u{1F361}", "\u{1F95F}", "\u{1F960}", "\u{1F961}", "\u{1F980}", "\u{1F99E}", "\u{1F990}", "\u{1F991}",
+      "\u{1F9AA}", "\u{1F366}", "\u{1F367}", "\u{1F368}", "\u{1F369}", "\u{1F36A}", "\u{1F382}", "\u{1F370}",
+      "\u{1F9C1}", "\u{1F967}", "\u{1F36B}", "\u{1F36C}", "\u{1F36D}", "\u{1F36E}", "\u{1F36F}", "\u{2615}"
+    ],
+    "food",
+    "food drink fruit snack meal sweet whatsapp"
+  ),
+  places: emojiItems(
+    [
+      "\u{1F30D}", "\u{1F30E}", "\u{1F30F}", "\u{1F310}", "\u{1F5FA}\uFE0F", "\u{1F5FE}", "\u{1F9ED}", "\u{1F3D4}\uFE0F",
+      "\u{26F0}\uFE0F", "\u{1F30B}", "\u{1F5FB}", "\u{1F3D5}\uFE0F", "\u{1F3D6}\uFE0F", "\u{1F3DC}\uFE0F", "\u{1F3DD}\uFE0F", "\u{1F3DE}\uFE0F",
+      "\u{1F3DF}\uFE0F", "\u{1F3DB}\uFE0F", "\u{1F3D7}\uFE0F", "\u{1F9F1}", "\u{1FAA8}", "\u{1FAB5}", "\u{1F6D6}", "\u{1F3D8}\uFE0F",
+      "\u{1F3DA}\uFE0F", "\u{1F3E0}", "\u{1F3E1}", "\u{1F3E2}", "\u{1F3E3}", "\u{1F3E4}", "\u{1F3E5}", "\u{1F3E6}",
+      "\u{1F3E8}", "\u{1F3EA}", "\u{1F3EB}", "\u{1F3EC}", "\u{1F3ED}", "\u{1F3EF}", "\u{1F3F0}", "\u{1F492}",
+      "\u{1F5FC}", "\u{1F5FD}", "\u{26EA}", "\u{1F54C}", "\u{1F6D5}", "\u{1F54D}", "\u{26E9}\uFE0F", "\u{1F689}",
+      "\u{1F68C}", "\u{1F697}", "\u{1F695}", "\u{2708}\uFE0F", "\u{1F680}", "\u{26F5}", "\u{1F6A2}", "\u{1F6F5}"
+    ],
+    "place",
+    "travel place car flight home office world whatsapp"
+  ),
+  objects: emojiItems(
+    [
+      "\u{231A}", "\u{1F4F1}", "\u{1F4F2}", "\u{1F4BB}", "\u{2328}\uFE0F", "\u{1F5A5}\uFE0F", "\u{1F5A8}\uFE0F", "\u{1F5B1}\uFE0F",
+      "\u{1F5B2}\uFE0F", "\u{1F579}\uFE0F", "\u{1F5DC}\uFE0F", "\u{1F4BD}", "\u{1F4BE}", "\u{1F4BF}", "\u{1F4C0}", "\u{1F4FC}",
+      "\u{1F4F7}", "\u{1F4F8}", "\u{1F4F9}", "\u{1F3A5}", "\u{1F4FD}\uFE0F", "\u{1F39E}\uFE0F", "\u{1F4DE}", "\u{260E}\uFE0F",
+      "\u{1F4DF}", "\u{1F4E0}", "\u{1F4FA}", "\u{1F4FB}", "\u{1F399}\uFE0F", "\u{1F39A}\uFE0F", "\u{1F39B}\uFE0F", "\u{1F9ED}",
+      "\u{23F1}\uFE0F", "\u{23F2}\uFE0F", "\u{23F0}", "\u{1F570}\uFE0F", "\u{231B}", "\u{23F3}", "\u{1F4E1}", "\u{1F50B}",
+      "\u{1FAAB}", "\u{1F50C}", "\u{1F4A1}", "\u{1F526}", "\u{1F56F}\uFE0F", "\u{1FA94}", "\u{1F9EF}", "\u{1F6E2}\uFE0F",
+      "\u{1F4B8}", "\u{1F4B5}", "\u{1F4B0}", "\u{1F4B3}", "\u{1F48E}", "\u{1F9F0}", "\u{1F527}", "\u{1FA9B}",
+      "\u{1F528}", "\u{2692}\uFE0F", "\u{1F6E0}\uFE0F", "\u{26CF}\uFE0F", "\u{1FA9A}", "\u{1F512}", "\u{1F513}", "\u{1F511}",
+      "\u{1F381}", "\u{1F388}", "\u{1F389}", "\u{1F38A}", "\u{1F38F}", "\u{1F390}", "\u{1F9E7}", "\u{1F4E9}"
+    ],
+    "object",
+    "object phone camera computer gift file work whatsapp"
+  ),
+  symbols: emojiItems(
+    [
+      "\u{2764}\uFE0F", "\u{1F9E1}", "\u{1F49B}", "\u{1F49A}", "\u{1F499}", "\u{1F49C}", "\u{1F90E}", "\u{1F5A4}",
+      "\u{1F90D}", "\u{1FA77}", "\u{1F494}", "\u{2763}\uFE0F", "\u{1F495}", "\u{1F49E}", "\u{1F493}", "\u{1F497}",
+      "\u{1F496}", "\u{1F498}", "\u{1F49D}", "\u{1F49F}", "\u{262E}\uFE0F", "\u{271D}\uFE0F", "\u{262A}\uFE0F", "\u{1F549}\uFE0F",
+      "\u{2638}\uFE0F", "\u{2721}\uFE0F", "\u{1F52F}", "\u{1F54E}", "\u{262F}\uFE0F", "\u{2626}\uFE0F", "\u{1F6D0}", "\u{26CE}",
+      "\u{2648}", "\u{2649}", "\u{264A}", "\u{264B}", "\u{264C}", "\u{264D}", "\u{264E}", "\u{264F}",
+      "\u{2650}", "\u{2651}", "\u{2652}", "\u{2653}", "\u{1F194}", "\u{269B}\uFE0F", "\u{1F251}", "\u{2622}\uFE0F",
+      "\u{2623}\uFE0F", "\u{1F4F4}", "\u{1F4F3}", "\u{1F236}", "\u{1F21A}", "\u{1F238}", "\u{1F23A}", "\u{1F237}\uFE0F",
+      "\u{2734}\uFE0F", "\u{1F19A}", "\u{1F4AE}", "\u{1F250}", "\u{3299}\uFE0F", "\u{3297}\uFE0F", "\u{1F234}", "\u{1F235}",
+      "\u{1F239}", "\u{1F232}", "\u{1F170}\uFE0F", "\u{1F171}\uFE0F", "\u{1F18E}", "\u{1F191}", "\u{274C}", "\u{2B55}",
+      "\u{1F6D1}", "\u{26D4}", "\u{1F4DB}", "\u{1F6AB}", "\u{1F4AF}", "\u{1F4A2}", "\u{2668}\uFE0F", "\u{1F6B7}",
+      "\u{26A0}\uFE0F", "\u{1F6B8}", "\u{1F531}", "\u{269C}\uFE0F", "\u{1F530}", "\u{267B}\uFE0F", "\u{2705}", "\u{1F22F}"
+    ],
+    "symbol",
+    "heart symbol check warning plus sign whatsapp"
+  )
+};
+
 function normalizeMessage(message: Message): Message {
   return { ...message, message_type: message.message_type ?? "text", read_by: Array.isArray(message.read_by) ? message.read_by : [] };
 }
@@ -347,11 +462,18 @@ export function MessengerPage() {
   const mentionMessages = mentionRecords.length
     ? mentionRecords
     : messages.filter((message) => user && message.sender_id !== user.id && message.body.toLowerCase().includes(`@${user.name.toLowerCase()}`));
+  const pickerEmojiGroups = Object.fromEntries(
+    Object.entries(richEmojiGroups).map(([category, items]) => {
+      const seen = new Set(items.map((item) => item.symbol));
+      const extraItems = WHATSAPP_STYLE_EMOJI_GROUPS[category as EmojiCategory].filter((item) => !seen.has(item.symbol));
+      return [category, [...items, ...extraItems]];
+    })
+  ) as Record<EmojiCategory, EmojiItem[]>;
   const searchNeedle = emojiSearch.trim().toLowerCase();
   const matchesSearch = (item: { label: string; keywords: string; value?: string; symbol?: string }) =>
     !searchNeedle || `${item.label} ${item.keywords} ${item.value ?? ""} ${item.symbol ?? ""}`.toLowerCase().includes(searchNeedle);
   const filteredEmojiGroups = Object.fromEntries(
-    Object.entries(richEmojiGroups).map(([category, items]) => [category, items.filter(matchesSearch)])
+    Object.entries(pickerEmojiGroups).map(([category, items]) => [category, items.filter(matchesSearch)])
   ) as Record<EmojiCategory, EmojiItem[]>;
   const filteredEmojiOptions = Object.values(filteredEmojiGroups).flat();
   const filteredStickerOptions = richStickerOptions.filter(matchesSearch);
@@ -2130,10 +2252,10 @@ export function MessengerPage() {
             <form onSubmit={sendMessage} className="relative border-t border-[#ddddec] bg-white p-3 sm:p-4">
               {showEmojiPanel && (
                 <div
-                  className="absolute bottom-[76px] right-3 z-20 flex max-h-[min(72dvh,560px)] w-[min(360px,calc(100vw-2rem))] flex-col overflow-hidden rounded-lg border border-[#d1d1e0] bg-white shadow-2xl"
+                  className="absolute bottom-[68px] left-2 right-2 z-30 mx-auto flex h-[min(72dvh,540px)] max-w-[420px] flex-col overflow-hidden rounded-lg border border-[#d1d1e0] bg-white shadow-2xl sm:left-auto sm:right-3 sm:mx-0 sm:w-[390px]"
                   onMouseDown={(event) => event.stopPropagation()}
                 >
-                  <div className="grid grid-cols-4 border-b border-[#e6e6f2] text-sm">
+                  <div className="grid shrink-0 grid-cols-4 border-b border-[#e6e6f2] text-sm">
                     {(["all", "emoji", "stickers", "gifs"] as const).map((tab) => (
                       <button
                         key={tab}
@@ -2145,7 +2267,7 @@ export function MessengerPage() {
                       </button>
                     ))}
                   </div>
-                  <div className="flex gap-1 overflow-x-auto border-b border-[#e6e6f2] px-2 py-2 text-lg">
+                  <div className="flex shrink-0 gap-1 overflow-x-auto border-b border-[#e6e6f2] px-2 py-2 text-lg">
                     {([
                       ["emoji", "🕘"],
                       ["people", "☺️"],
@@ -2165,8 +2287,8 @@ export function MessengerPage() {
                       </button>
                     ))}
                   </div>
-                  <div className="min-h-0 overflow-y-auto p-3">
-                    <div className="relative">
+                  <div className="min-h-0 flex-1 overflow-y-auto p-3">
+                    <div className="sticky top-0 z-10 bg-white pb-3">
                       <Search className="absolute right-3 top-2.5 text-slate-400" size={16} />
                       <input
                         value={emojiSearch}
@@ -2177,13 +2299,13 @@ export function MessengerPage() {
                     </div>
                     {emojiTab !== "gifs" && emojiTab !== "stickers" && (
                       <>
-                        <div className="mt-3 flex items-center justify-between text-sm">
+                        <div className="flex items-center justify-between text-sm">
                           <span className="font-medium text-slate-700">{emojiTab === "all" ? "Recent" : "Emoji"}</span>
                           <button type="button" onClick={() => setEmojiTab("emoji")} className="text-xs text-slate-500">See all</button>
                         </div>
-                        <div className="mt-2 grid grid-cols-6 gap-2">
-                          {(emojiTab === "all" ? filteredEmojiOptions.slice(0, 48) : filteredEmojiGroups[emojiTab as EmojiCategory]).map((emoji) => (
-                            <button key={`${emoji.symbol}-${emoji.label}`} type="button" onClick={() => setBody((value) => `${value}${emoji.symbol}`)} className="grid h-10 place-items-center rounded-md text-2xl hover:bg-[#ededfa]" title={emoji.label}>
+                        <div className="mt-2 grid grid-cols-8 gap-1">
+                          {(emojiTab === "all" ? filteredEmojiOptions : filteredEmojiGroups[emojiTab as EmojiCategory]).map((emoji) => (
+                            <button key={`${emoji.symbol}-${emoji.label}`} type="button" onClick={() => setBody((value) => `${value}${emoji.symbol}`)} className="grid h-9 w-9 place-items-center rounded-md text-2xl leading-none hover:bg-[#ededfa]" title={emoji.label}>
                               {emoji.symbol}
                             </button>
                           ))}
@@ -2202,7 +2324,7 @@ export function MessengerPage() {
                               key={sticker.label}
                               type="button"
                               onClick={() => sendQuickMessage(sticker.value, "sticker")}
-                              className={`grid h-20 place-items-center rounded-lg ${sticker.color} text-4xl shadow-sm hover:scale-[1.02]`}
+                              className={`grid aspect-square place-items-center rounded-lg ${sticker.color} text-4xl shadow-sm hover:scale-[1.02]`}
                               title={sticker.label}
                             >
                               {sticker.value}
@@ -2226,14 +2348,14 @@ export function MessengerPage() {
                               className="overflow-hidden rounded-md bg-slate-100 shadow-sm hover:scale-[1.02]"
                               title={gif.title}
                             >
-                              <img src={gif.preview} alt={gif.title} className="h-24 w-full object-cover" />
+                              <img src={gif.preview} alt={gif.title} className="aspect-square w-full object-cover" />
                             </button>
                           )) : filteredGifOptions.map((gif, index) => (
                             <button
                               key={gif.value}
                               type="button"
                               onClick={() => sendQuickMessage(gif.value, "gif")}
-                              className={`grid h-24 place-items-center rounded-md p-2 text-center text-xs font-semibold text-white shadow-sm hover:scale-[1.02] ${
+                              className={`grid aspect-square place-items-center rounded-md p-2 text-center text-xs font-semibold text-white shadow-sm hover:scale-[1.02] ${
                                 index % 3 === 0 ? "bg-[#6264a7]" : index % 3 === 1 ? "bg-[#0f766e]" : "bg-[#c4314b]"
                               }`}
                             >
