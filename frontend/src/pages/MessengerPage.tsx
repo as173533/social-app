@@ -1,4 +1,4 @@
-import { Check, MessageSquare, Mic, Phone, PhoneOff, Search, Send, SlidersHorizontal, Speaker, UserPlus, Users, Video, X } from "lucide-react";
+import { Check, Maximize2, MessageSquare, Mic, Minimize2, Phone, PhoneOff, Search, Send, SlidersHorizontal, Speaker, UserPlus, Users, Video, X } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { API_URL, WS_URL } from "../api/client";
 import { chatApi, friendApi, userApi } from "../api/services";
@@ -78,6 +78,8 @@ export function MessengerPage() {
   const [typingUserId, setTypingUserId] = useState<number | null>(null);
   const [activeCall, setActiveCall] = useState<CallLog | null>(null);
   const [callError, setCallError] = useState("");
+  const [callMinimized, setCallMinimized] = useState(false);
+  const [callTick, setCallTick] = useState(0);
   const [soundReady, setSoundReady] = useState(false);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
@@ -94,9 +96,14 @@ export function MessengerPage() {
   const ringtone = useRef(new RingtonePlayer());
   const localVideo = useRef<HTMLVideoElement | null>(null);
   const remoteVideo = useRef<HTMLVideoElement | null>(null);
+  const remoteAudio = useRef<HTMLAudioElement | null>(null);
   const messagesContainer = useRef<HTMLDivElement | null>(null);
   const messagesEnd = useRef<HTMLDivElement | null>(null);
   const typingTimer = useRef<number | null>(null);
+  const audioOutputIdRef = useRef(audioOutputId);
+  const activeCallRef = useRef<CallLog | null>(activeCall);
+  const localStreamRef = useRef<MediaStream | null>(localStream);
+  const closedCallIds = useRef<Set<number>>(new Set());
 
   const peer = selected?.peer ?? null;
   const incomingRequests = useMemo(
@@ -112,6 +119,31 @@ export function MessengerPage() {
     () => new Set(requests.filter((request) => request.receiver_id === user?.id && request.status === "pending").map((request) => request.sender_id)),
     [requests, user?.id]
   );
+  const callPeerId = activeCall ? (activeCall.caller_id === user?.id ? activeCall.callee_id : activeCall.caller_id) : null;
+  const callPeer = callPeerId ? friends.find((friend) => friend.user.id === callPeerId)?.user : null;
+
+  const formatClockTime = (value?: string | null) => {
+    if (!value) return "--";
+    return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(new Date(value));
+  };
+
+  const formatDuration = (startedAt?: string | null, tick = callTick) => {
+    void tick;
+    if (!startedAt) return "00:00";
+    const seconds = Math.max(0, Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000));
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+    return `${String(minutes).padStart(2, "0")}:${String(remainingSeconds).padStart(2, "0")}`;
+  };
+
+  const cleanupCallMedia = () => {
+    ringtone.current.stop();
+    rtc.current?.close();
+    setLocalStream(null);
+    setRemoteStream(null);
+    setPendingOffer(null);
+    setCallMinimized(false);
+  };
 
   const loadAll = async () => {
     if (!accessToken) return;
@@ -193,6 +225,53 @@ export function MessengerPage() {
     return "Could not start the call. Check your selected devices and browser permissions.";
   };
 
+  const sendSocketPayload = (socket: WebSocket | null, payload: Record<string, unknown>) => {
+    if (socket?.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify(payload));
+      return true;
+    }
+    return false;
+  };
+
+  const playRemoteMedia = () => {
+    const media = remoteAudio.current ?? remoteVideo.current;
+    media?.play().catch(() => setCallError("Remote audio is blocked. Click inside the page once, then reconnect the call."));
+  };
+
+  const acceptIncomingOffer = async (fromUserId: number, sdp: RTCSessionDescriptionInit) => {
+    const call = activeCallRef.current;
+    if (call?.id && closedCallIds.current.has(call.id)) return;
+    if (!call || call.state !== "accepted") {
+      setPendingOffer({ fromUserId, sdp });
+      return;
+    }
+    if (!localStreamRef.current) {
+      const wantsVideo = call.call_type === "video";
+      const stream = await rtc.current?.startLocal(wantsVideo, { audioInputId, videoInputId });
+      if (stream) setLocalStream(stream);
+    }
+    await rtc.current?.acceptOffer(fromUserId, sdp);
+    setPendingOffer(null);
+  };
+
+  useEffect(() => {
+    audioOutputIdRef.current = audioOutputId;
+  }, [audioOutputId]);
+
+  useEffect(() => {
+    activeCallRef.current = activeCall;
+  }, [activeCall]);
+
+  useEffect(() => {
+    localStreamRef.current = localStream;
+  }, [localStream]);
+
+  useEffect(() => {
+    if (!activeCall || activeCall.state !== "accepted") return;
+    const intervalId = window.setInterval(() => setCallTick((value) => value + 1), 1000);
+    return () => window.clearInterval(intervalId);
+  }, [activeCall?.id, activeCall?.state]);
+
   useEffect(() => {
     if (!accessToken) return;
     loadAll();
@@ -210,14 +289,20 @@ export function MessengerPage() {
 
   useEffect(() => {
     if (!accessToken) return;
-    chatSocket.current = new WebSocket(`${WS_URL}/ws/chat?token=${accessToken}`);
-    callSocket.current = new WebSocket(`${WS_URL}/ws/call?token=${accessToken}`);
+    let disposed = false;
+    let chatReconnectTimer: number | undefined;
+    let callReconnectTimer: number | undefined;
+
     rtc.current = new WebRTCClient(
-      (payload) => callSocket.current?.send(JSON.stringify(payload)),
+      (payload) => {
+        if (!sendSocketPayload(callSocket.current, payload)) {
+          setCallError("Call connection is still starting. Try again in a moment.");
+        }
+      },
       (stream) => setRemoteStream(stream)
     );
 
-    chatSocket.current.onmessage = (event) => {
+    const handleChatMessage = (event: MessageEvent<string>) => {
       const payload = JSON.parse(event.data) as ChatEvent;
       if (payload.type === "message") {
         const nextMessage = normalizeMessage(payload.message);
@@ -260,22 +345,24 @@ export function MessengerPage() {
       }
     };
 
-    callSocket.current.onmessage = async (event) => {
+    const handleCallMessage = async (event: MessageEvent<string>) => {
       const payload = JSON.parse(event.data) as CallEvent;
       if (payload.type === "call:ringing" || payload.type === "call:state") {
         const callFinished = payload.call.state === "ended" || payload.call.state === "rejected" || payload.call.state === "missed";
-        setActiveCall(callFinished ? null : payload.call);
         if (callFinished) {
-          ringtone.current.stop();
-          rtc.current?.close();
-          setLocalStream(null);
-          setRemoteStream(null);
-          setPendingOffer(null);
+          closedCallIds.current.add(payload.call.id);
+        } else {
+          closedCallIds.current.delete(payload.call.id);
+        }
+        setActiveCall(callFinished ? null : payload.call);
+        activeCallRef.current = callFinished ? null : payload.call;
+        if (callFinished) {
+          cleanupCallMedia();
         }
         const isIncomingRinging = payload.call.state === "ringing" && payload.call.callee_id === user?.id;
         if (isIncomingRinging) {
           ringtone.current
-            .setOutputDevice(audioOutputId)
+            .setOutputDevice(audioOutputIdRef.current)
             .then(() => ringtone.current.start())
             .catch(() => setCallError("Incoming call sound is blocked. Click Enable call sound once."));
         } else {
@@ -283,23 +370,64 @@ export function MessengerPage() {
         }
       }
       if (payload.type === "webrtc:offer") {
-        setPendingOffer({ fromUserId: payload.from_user_id, sdp: payload.sdp });
+        if (!activeCallRef.current || closedCallIds.current.has(activeCallRef.current.id)) return;
+        await acceptIncomingOffer(payload.from_user_id, payload.sdp).catch(() =>
+          setCallError("Could not connect the incoming audio stream. End the call and try again.")
+        );
       }
       if (payload.type === "webrtc:answer") {
-        await rtc.current?.acceptAnswer(payload.sdp);
+        await rtc.current?.acceptAnswer(payload.sdp).catch(() => setCallError("Could not connect the remote audio stream."));
       }
       if (payload.type === "webrtc:ice") {
-        await rtc.current?.addIce(payload.candidate);
+        await rtc.current?.addIce(payload.candidate).catch(() => undefined);
       }
     };
 
+    const openChatSocket = () => {
+      if (disposed) return;
+      const chat = new WebSocket(`${WS_URL}/ws/chat?token=${accessToken}`);
+      chatSocket.current = chat;
+      chat.onmessage = handleChatMessage;
+      chat.onerror = () => chat.close();
+      chat.onclose = () => {
+        if (chatSocket.current === chat) chatSocket.current = null;
+        if (!disposed) {
+          chatReconnectTimer = window.setTimeout(openChatSocket, 3000);
+        }
+      };
+    };
+
+    const openCallSocket = () => {
+      if (disposed) return;
+      const call = new WebSocket(`${WS_URL}/ws/call?token=${accessToken}`);
+      callSocket.current = call;
+      call.onmessage = (event) => {
+        handleCallMessage(event).catch(() => setCallError("Call connection lost. Reconnecting..."));
+      };
+      call.onerror = () => call.close();
+      call.onclose = () => {
+        if (callSocket.current === call) callSocket.current = null;
+        if (!disposed) {
+          callReconnectTimer = window.setTimeout(openCallSocket, 3000);
+        }
+      };
+    };
+
+    openChatSocket();
+    openCallSocket();
+
     return () => {
+      disposed = true;
+      window.clearTimeout(chatReconnectTimer);
+      window.clearTimeout(callReconnectTimer);
       chatSocket.current?.close();
       callSocket.current?.close();
+      chatSocket.current = null;
+      callSocket.current = null;
       ringtone.current.stop();
       rtc.current?.close();
     };
-  }, [accessToken, user?.id, audioOutputId]);
+  }, [accessToken, user?.id]);
 
   useEffect(() => {
     if (selected) {
@@ -317,14 +445,16 @@ export function MessengerPage() {
       .filter((message) => message.sender_id !== user.id && !includesNumber(message.read_by, user.id))
       .map((message) => message.id);
     if (unreadPeerMessages.length) {
-      chatSocket.current?.send(JSON.stringify({ type: "read", conversation_id: selected.id, message_ids: unreadPeerMessages }));
+      sendSocketPayload(chatSocket.current, { type: "read", conversation_id: selected.id, message_ids: unreadPeerMessages });
     }
   }, [messages, selected, user]);
 
   useEffect(() => {
     if (localVideo.current && localStream) localVideo.current.srcObject = localStream;
     if (remoteVideo.current && remoteStream) remoteVideo.current.srcObject = remoteStream;
+    if (remoteAudio.current && remoteStream) remoteAudio.current.srcObject = remoteStream;
     if (remoteStream) {
+      playRemoteMedia();
       scrollMessagesToBottom("auto");
     }
   }, [localStream, remoteStream, activeCall?.state, activeCall?.call_type]);
@@ -332,8 +462,10 @@ export function MessengerPage() {
   useEffect(() => {
     const applyOutput = async () => {
       const remote = remoteVideo.current as HTMLVideoElement & { setSinkId?: (sinkId: string) => Promise<void> };
+      const audio = remoteAudio.current as HTMLAudioElement & { setSinkId?: (sinkId: string) => Promise<void> };
       const local = localVideo.current as HTMLVideoElement & { setSinkId?: (sinkId: string) => Promise<void> };
       if (remote?.setSinkId) await remote.setSinkId(audioOutputId || "");
+      if (audio?.setSinkId) await audio.setSinkId(audioOutputId || "");
       if (local?.setSinkId) await local.setSinkId(audioOutputId || "");
       await ringtone.current.setOutputDevice(audioOutputId);
     };
@@ -366,26 +498,28 @@ export function MessengerPage() {
   const sendMessage = async (event: FormEvent) => {
     event.preventDefault();
     if (!selected || !body.trim()) return;
-    chatSocket.current?.send(JSON.stringify({ type: "message", conversation_id: selected.id, body }));
+    sendSocketPayload(chatSocket.current, { type: "message", conversation_id: selected.id, body });
     setBody("");
     scrollMessagesToBottom();
   };
 
   const sendCallEventMessage = (callType: "audio" | "video", action: "start" | "end") => {
     if (!selected) return;
-    chatSocket.current?.send(
-      JSON.stringify({ type: "message", conversation_id: selected.id, body: `__call__:${callType}:${action}` })
-    );
+    sendSocketPayload(chatSocket.current, { type: "message", conversation_id: selected.id, body: `__call__:${callType}:${action}` });
   };
 
   const startCall = async (callType: "audio" | "video") => {
     if (!peer) return;
     setCallError("");
+    setCallMinimized(false);
     try {
       await loadDevices();
       const stream = await rtc.current?.startLocal(callType === "video", { audioInputId, videoInputId });
       if (stream) setLocalStream(stream);
-      callSocket.current?.send(JSON.stringify({ type: "call:start", callee_id: peer.id, call_type: callType }));
+      if (!sendSocketPayload(callSocket.current, { type: "call:start", callee_id: peer.id, call_type: callType })) {
+        setCallError("Call connection is still starting. Try again in a moment.");
+        return;
+      }
       sendCallEventMessage(callType, "start");
       await rtc.current?.createOffer(peer.id);
     } catch (error) {
@@ -400,15 +534,15 @@ export function MessengerPage() {
       if (state === "ended") {
         sendCallEventMessage(activeCall.call_type, "end");
       }
-      ringtone.current.stop();
-      rtc.current?.close();
-      setLocalStream(null);
-      setRemoteStream(null);
-      setPendingOffer(null);
-      callSocket.current?.send(JSON.stringify({ type: "call:state", call_id: activeCall.id, state }));
+      closedCallIds.current.add(activeCall.id);
+      setActiveCall(null);
+      activeCallRef.current = null;
+      cleanupCallMedia();
+      sendSocketPayload(callSocket.current, { type: "call:state", call_id: activeCall.id, state });
     }
     if (state === "accepted" && peerId) {
       setCallError("");
+      setCallMinimized(false);
       try {
         ringtone.current.stop();
         await loadDevices();
@@ -421,7 +555,7 @@ export function MessengerPage() {
         } else {
           rtc.current?.ensurePeer(peerId);
         }
-        callSocket.current?.send(JSON.stringify({ type: "call:state", call_id: activeCall.id, state }));
+        sendSocketPayload(callSocket.current, { type: "call:state", call_id: activeCall.id, state });
       } catch (error) {
         setCallError(mediaErrorMessage(error, activeCall.call_type));
       }
@@ -527,51 +661,86 @@ export function MessengerPage() {
   );
 
   const callPanel = activeCall ? (
-    <div className="rounded-lg border border-[#d1d1e0] bg-white p-3 shadow-2xl shadow-slate-900/20">
+    <div
+      className={`rounded-lg border border-[#d1d1e0] bg-white shadow-2xl shadow-slate-900/20 ${
+        callMinimized ? "p-2" : "p-3"
+      }`}
+    >
+      <audio ref={remoteAudio} autoPlay />
       <div className="flex items-center gap-3">
         <div className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-[#6264a7] font-semibold text-white">
-          {(friends.find((friend) => friend.user.id === (activeCall.caller_id === user?.id ? activeCall.callee_id : activeCall.caller_id))?.user.name ?? "C").slice(0, 1).toUpperCase()}
+          {(callPeer?.name ?? "C").slice(0, 1).toUpperCase()}
         </div>
         <div className="min-w-0 flex-1">
-          <h2 className="truncate font-semibold">
-            {friends.find((friend) => friend.user.id === (activeCall.caller_id === user?.id ? activeCall.callee_id : activeCall.caller_id))?.user.name ?? "Call"}
-          </h2>
-          <p className="text-sm text-slate-500">
+          <h2 className="truncate font-semibold">{callPeer?.name ?? "Call"}</h2>
+          <p className="truncate text-sm text-slate-500">
             {activeCall.state === "ringing" && activeCall.callee_id === user?.id
               ? `Incoming ${activeCall.call_type} call`
               : activeCall.state === "ringing"
                 ? `Calling ${activeCall.call_type}...`
                 : activeCall.state === "accepted"
-                  ? `${activeCall.call_type} call ongoing`
+                  ? `${activeCall.call_type} call • ${formatDuration(activeCall.answered_at ?? activeCall.started_at)}`
                   : activeCall.state}
           </p>
         </div>
-        <span className="rounded-md bg-[#ededfa] px-2.5 py-1 text-xs font-semibold capitalize text-[#464775]">
-          {activeCall.state}
-        </span>
-      </div>
-      {activeCall.state === "accepted" && activeCall.call_type === "video" && (
-        <div className="mt-3 grid grid-cols-2 gap-2">
-          <video ref={localVideo} muted autoPlay playsInline className="aspect-video min-h-16 rounded-md bg-slate-950 object-cover" />
-          <video ref={remoteVideo} autoPlay playsInline className="aspect-video min-h-16 rounded-md bg-slate-950 object-cover" />
-        </div>
-      )}
-      {activeCall.call_type === "audio" && (
-        <div className="hidden">
-          <video ref={localVideo} muted autoPlay playsInline />
-          <video ref={remoteVideo} autoPlay playsInline />
-        </div>
-      )}
-      <div className="mt-3 flex gap-2">
-        {activeCall.state === "ringing" && activeCall.callee_id === user?.id && (
-          <button onClick={() => setCallState("accepted")} className="flex flex-1 items-center justify-center gap-2 rounded-md bg-[#13a10e] py-2.5 font-medium text-white">
-            <Phone size={16} />Accept
-          </button>
-        )}
-        <button onClick={() => setCallState(activeCall.state === "ringing" ? "rejected" : "ended")} className="flex flex-1 items-center justify-center gap-2 rounded-md bg-[#c4314b] py-2.5 font-medium text-white">
-          <PhoneOff size={16} />{activeCall.state === "ringing" && activeCall.callee_id === user?.id ? "Reject" : "End"}
+        <button
+          onClick={() => setCallMinimized((value) => !value)}
+          className="grid h-8 w-8 place-items-center rounded-md text-[#464775] hover:bg-[#ededfa]"
+          title={callMinimized ? "Restore call" : "Minimize call"}
+        >
+          {callMinimized ? <Maximize2 size={16} /> : <Minimize2 size={16} />}
         </button>
       </div>
+      {!callMinimized && (
+        <>
+          <div className="mt-3 grid grid-cols-3 gap-2 rounded-md bg-[#f7f7fc] p-2 text-center text-xs text-slate-600">
+            <span>
+              <span className="block font-semibold text-slate-900">{formatClockTime(activeCall.started_at)}</span>
+              Started
+            </span>
+            <span>
+              <span className="block font-semibold capitalize text-slate-900">{activeCall.state}</span>
+              Status
+            </span>
+            <span>
+              <span className="block font-semibold text-slate-900">
+                {activeCall.state === "accepted" ? formatDuration(activeCall.answered_at ?? activeCall.started_at) : "--:--"}
+              </span>
+              Time
+            </span>
+          </div>
+          {activeCall.state === "accepted" && activeCall.call_type === "video" && (
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              <video ref={localVideo} muted autoPlay playsInline className="aspect-video min-h-16 rounded-md bg-slate-950 object-cover" />
+              <video ref={remoteVideo} autoPlay playsInline className="aspect-video min-h-16 rounded-md bg-slate-950 object-cover" />
+            </div>
+          )}
+          <div className="mt-3 flex gap-2">
+            {activeCall.state === "ringing" && activeCall.callee_id === user?.id && (
+              <button onClick={() => setCallState("accepted")} className="flex flex-1 items-center justify-center gap-2 rounded-md bg-[#13a10e] py-2.5 font-medium text-white">
+                <Phone size={16} />Accept
+              </button>
+            )}
+            <button onClick={() => setCallState(activeCall.state === "ringing" ? "rejected" : "ended")} className="flex flex-1 items-center justify-center gap-2 rounded-md bg-[#c4314b] py-2.5 font-medium text-white">
+              <PhoneOff size={16} />{activeCall.state === "ringing" && activeCall.callee_id === user?.id ? "Reject" : "End"}
+            </button>
+          </div>
+        </>
+      )}
+      {callMinimized && (
+        <div className="mt-2 flex items-center gap-2">
+          <span className="rounded-md bg-[#ededfa] px-2 py-1 text-xs font-semibold capitalize text-[#464775]">
+            {activeCall.state === "accepted" ? formatDuration(activeCall.answered_at ?? activeCall.started_at) : activeCall.state}
+          </span>
+          <button
+            onClick={() => setCallState(activeCall.state === "ringing" ? "rejected" : "ended")}
+            className="grid h-8 w-8 place-items-center rounded-md bg-[#c4314b] text-white"
+            title={activeCall.state === "ringing" && activeCall.callee_id === user?.id ? "Reject" : "End call"}
+          >
+            <PhoneOff size={15} />
+          </button>
+        </div>
+      )}
     </div>
   ) : null;
 
@@ -790,10 +959,10 @@ export function MessengerPage() {
                 value={body}
                 onChange={(event) => {
                   setBody(event.target.value);
-                  chatSocket.current?.send(JSON.stringify({ type: "typing", conversation_id: selected.id, is_typing: true }));
+                  sendSocketPayload(chatSocket.current, { type: "typing", conversation_id: selected.id, is_typing: true });
                   if (typingTimer.current) window.clearTimeout(typingTimer.current);
                   typingTimer.current = window.setTimeout(() => {
-                    chatSocket.current?.send(JSON.stringify({ type: "typing", conversation_id: selected.id, is_typing: false }));
+                    sendSocketPayload(chatSocket.current, { type: "typing", conversation_id: selected.id, is_typing: false });
                   }, 900);
                 }}
                 className="min-w-0 flex-1 rounded-md border border-[#d1d1e0] bg-white px-4 py-3 outline-none focus:border-[#6264a7]"

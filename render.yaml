@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: chat-frontend
+    runtime: static
+    buildCommand: cd frontend && npm ci && npm run build
+    staticPublishPath: frontend/dist
+    envVars:
+      - key: VITE_API_URL
+        value: https://chat-backend-dapy.onrender.com
+      - key: VITE_WS_URL
+        value: wss://chat-backend-dapy.onrender.com
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html

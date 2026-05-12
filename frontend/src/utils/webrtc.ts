@@ -8,6 +8,7 @@ export type MediaDeviceSelection = {
 export class WebRTCClient {
   private peer: RTCPeerConnection | null = null;
   private localStream: MediaStream | null = null;
+  private pendingIceCandidates: RTCIceCandidateInit[] = [];
 
   constructor(
     private readonly sendSignal: SignalSender,
@@ -64,17 +65,33 @@ export class WebRTCClient {
   async acceptOffer(peerId: number, offer: RTCSessionDescriptionInit) {
     const peer = this.ensurePeer(peerId);
     await peer.setRemoteDescription(offer);
+    await this.flushPendingIceCandidates();
     const answer = await peer.createAnswer();
     await peer.setLocalDescription(answer);
     this.sendSignal({ type: "webrtc:answer", peer_id: peerId, sdp: answer });
   }
 
   async acceptAnswer(answer: RTCSessionDescriptionInit) {
-    await this.peer?.setRemoteDescription(answer);
+    if (!this.peer) return;
+    await this.peer.setRemoteDescription(answer);
+    await this.flushPendingIceCandidates();
   }
 
   async addIce(candidate: RTCIceCandidateInit) {
-    await this.peer?.addIceCandidate(candidate);
+    if (!this.peer || !this.peer.remoteDescription) {
+      this.pendingIceCandidates.push(candidate);
+      return;
+    }
+    await this.peer.addIceCandidate(candidate);
+  }
+
+  private async flushPendingIceCandidates() {
+    if (!this.peer || !this.peer.remoteDescription) return;
+    const candidates = [...this.pendingIceCandidates];
+    this.pendingIceCandidates = [];
+    for (const candidate of candidates) {
+      await this.peer.addIceCandidate(candidate);
+    }
   }
 
   close() {
@@ -82,5 +99,6 @@ export class WebRTCClient {
     this.peer = null;
     this.localStream?.getTracks().forEach((track) => track.stop());
     this.localStream = null;
+    this.pendingIceCandidates = [];
   }
 }
