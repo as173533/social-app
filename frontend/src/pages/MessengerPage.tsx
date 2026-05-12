@@ -1,5 +1,6 @@
 import { Check, ChevronDown, FileUp, Grid2X2, Image, Laugh, Maximize2, MessageSquare, Mic, MicOff, Minimize2, MonitorUp, MoreHorizontal, Paperclip, Phone, PhoneOff, RefreshCcw, Search, Send, Shield, SlidersHorizontal, Speaker, Square, UserPlus, Users, Video, VideoOff, Volume2, X } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
 import { API_URL, WS_URL } from "../api/client";
 import { chatApi, friendApi, userApi } from "../api/services";
 import { useAuthStore } from "../stores/authStore";
@@ -19,6 +20,12 @@ type CallEvent =
   | { type: "webrtc:offer"; from_user_id: number; sdp: RTCSessionDescriptionInit }
   | { type: "webrtc:answer"; from_user_id: number; sdp: RTCSessionDescriptionInit }
   | { type: "webrtc:ice"; from_user_id: number; candidate: RTCIceCandidateInit };
+
+type EmojiCategory = "emoji" | "gestures" | "people" | "food" | "places" | "objects" | "symbols";
+type EmojiTab = "all" | EmojiCategory | "stickers" | "gifs";
+type EmojiItem = { symbol: string; label: string; keywords: string };
+type StickerItem = { label: string; value: string; color: string; keywords: string };
+type GifItem = { label: string; value: string; icon: string; keywords: string };
 
 function normalizeMessage(message: Message): Message {
   return { ...message, message_type: message.message_type ?? "text", read_by: Array.isArray(message.read_by) ? message.read_by : [] };
@@ -92,6 +99,8 @@ function recorderMimeType(kind: "audio" | "video"): string {
 
 export function MessengerPage() {
   const { user, accessToken } = useAuthStore();
+  const navigate = useNavigate();
+  const { conversationId } = useParams();
   const [friends, setFriends] = useState<Friend[]>([]);
   const [requests, setRequests] = useState<FriendRequest[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -104,7 +113,8 @@ export function MessengerPage() {
   const [searchError, setSearchError] = useState("");
   const [activeView, setActiveView] = useState<"chat" | "people">("chat");
   const [showEmojiPanel, setShowEmojiPanel] = useState(false);
-  const [emojiTab, setEmojiTab] = useState<"all" | "emoji" | "stickers" | "gifs" | "gestures" | "people" | "food" | "places" | "objects" | "symbols">("all");
+  const [emojiTab, setEmojiTab] = useState<EmojiTab>("all");
+  const [emojiSearch, setEmojiSearch] = useState("");
   const [showAudioMenu, setShowAudioMenu] = useState(false);
   const [noiseSuppression, setNoiseSuppression] = useState(true);
   const [showMobileDevices, setShowMobileDevices] = useState(false);
@@ -120,6 +130,7 @@ export function MessengerPage() {
   const [callTick, setCallTick] = useState(0);
   const [micMuted, setMicMuted] = useState(false);
   const [cameraOff, setCameraOff] = useState(false);
+  const [videoMessageFacingMode, setVideoMessageFacingMode] = useState<"user" | "environment">("user");
   const [callPosition, setCallPosition] = useState({ x: 0, y: 0 });
   const [soundReady, setSoundReady] = useState(false);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
@@ -149,6 +160,7 @@ export function MessengerPage() {
   const recorder = useRef<MediaRecorder | null>(null);
   const recordingPreviewVideo = useRef<HTMLVideoElement | null>(null);
   const recordedChunks = useRef<Blob[]>([]);
+  const discardRecordingOnStop = useRef(false);
   const audioOutputIdRef = useRef(audioOutputId);
   const activeCallRef = useRef<CallLog | null>(activeCall);
   const localStreamRef = useRef<MediaStream | null>(localStream);
@@ -156,6 +168,7 @@ export function MessengerPage() {
   const callEndMessageSentIds = useRef<Set<number>>(new Set());
 
   const peer = selected?.peer ?? null;
+  const routeConversationId = conversationId ? Number.parseInt(conversationId, 10) : null;
   const incomingRequests = useMemo(
     () => requests.filter((request) => request.receiver_id === user?.id && request.status === "pending"),
     [requests, user?.id]
@@ -201,6 +214,127 @@ export function MessengerPage() {
     { label: "Done", value: "💯 Done", icon: "💯" },
     { label: "Party", value: "🥳 Party time", icon: "🥳" }
   ];
+  const richEmojiGroups: Record<EmojiCategory, EmojiItem[]> = {
+    emoji: [
+      { symbol: "😀", label: "grinning", keywords: "happy smile face" },
+      { symbol: "😂", label: "laugh", keywords: "lol funny tears joy" },
+      { symbol: "🤣", label: "rolling laugh", keywords: "rofl funny haha" },
+      { symbol: "😊", label: "smile", keywords: "happy blush" },
+      { symbol: "😍", label: "heart eyes", keywords: "love crush" },
+      { symbol: "😘", label: "kiss", keywords: "love mwah" },
+      { symbol: "😎", label: "cool", keywords: "sunglasses swag" },
+      { symbol: "😮", label: "wow", keywords: "surprised shock" },
+      { symbol: "😢", label: "sad", keywords: "cry tear upset" },
+      { symbol: "😭", label: "cry", keywords: "sad tears" },
+      { symbol: "😡", label: "angry", keywords: "mad upset" },
+      { symbol: "🤔", label: "thinking", keywords: "think doubt question" },
+      { symbol: "🥳", label: "party", keywords: "celebrate birthday" },
+      { symbol: "🤯", label: "mind blown", keywords: "shock surprised" },
+      { symbol: "🥺", label: "please", keywords: "sad puppy eyes" },
+      { symbol: "🙄", label: "eyeroll", keywords: "annoyed bored" }
+    ],
+    gestures: [
+      { symbol: "👍", label: "thumbs up", keywords: "like yes ok" },
+      { symbol: "👎", label: "thumbs down", keywords: "dislike no" },
+      { symbol: "👌", label: "ok", keywords: "perfect fine" },
+      { symbol: "✌️", label: "peace", keywords: "victory two" },
+      { symbol: "🤞", label: "fingers crossed", keywords: "hope luck" },
+      { symbol: "🤝", label: "handshake", keywords: "deal agree" },
+      { symbol: "👋", label: "wave", keywords: "hello hi bye" },
+      { symbol: "👏", label: "clap", keywords: "applause good" },
+      { symbol: "🙏", label: "pray", keywords: "please thanks" },
+      { symbol: "💪", label: "strong", keywords: "muscle power" },
+      { symbol: "👊", label: "fist bump", keywords: "punch bump" },
+      { symbol: "🤙", label: "call me", keywords: "phone hang loose" }
+    ],
+    people: [
+      { symbol: "👨‍💻", label: "developer", keywords: "coder laptop work" },
+      { symbol: "👩‍💻", label: "developer woman", keywords: "coder laptop work" },
+      { symbol: "🧑‍🎓", label: "student", keywords: "school college" },
+      { symbol: "🧑‍⚕️", label: "doctor", keywords: "medical health" },
+      { symbol: "🧑‍🏫", label: "teacher", keywords: "class education" },
+      { symbol: "🤷", label: "shrug", keywords: "confused maybe" },
+      { symbol: "🙋", label: "raise hand", keywords: "question me" },
+      { symbol: "🙌", label: "hands up", keywords: "celebrate yay" }
+    ],
+    food: [
+      { symbol: "🍕", label: "pizza", keywords: "food slice" },
+      { symbol: "🍔", label: "burger", keywords: "food fast" },
+      { symbol: "🍟", label: "fries", keywords: "food chips" },
+      { symbol: "🍿", label: "popcorn", keywords: "movie snack" },
+      { symbol: "🎂", label: "cake", keywords: "birthday sweet" },
+      { symbol: "☕", label: "coffee", keywords: "drink tea" },
+      { symbol: "🍎", label: "apple", keywords: "fruit" },
+      { symbol: "🍫", label: "chocolate", keywords: "sweet" }
+    ],
+    places: [
+      { symbol: "🚗", label: "car", keywords: "drive vehicle" },
+      { symbol: "✈️", label: "plane", keywords: "flight travel" },
+      { symbol: "🚀", label: "rocket", keywords: "launch fast" },
+      { symbol: "🏠", label: "home", keywords: "house" },
+      { symbol: "🏢", label: "office", keywords: "building work" },
+      { symbol: "🏖️", label: "beach", keywords: "holiday travel" },
+      { symbol: "🌍", label: "earth", keywords: "world globe" },
+      { symbol: "🌈", label: "rainbow", keywords: "color" }
+    ],
+    objects: [
+      { symbol: "💡", label: "idea", keywords: "light bulb" },
+      { symbol: "📎", label: "paperclip", keywords: "attach file" },
+      { symbol: "📷", label: "camera", keywords: "photo image" },
+      { symbol: "🎧", label: "headphones", keywords: "music audio" },
+      { symbol: "💻", label: "laptop", keywords: "computer work" },
+      { symbol: "📱", label: "phone", keywords: "mobile call" },
+      { symbol: "🎁", label: "gift", keywords: "present" },
+      { symbol: "🔒", label: "lock", keywords: "secure" }
+    ],
+    symbols: [
+      { symbol: "❤️", label: "heart", keywords: "love red" },
+      { symbol: "💯", label: "hundred", keywords: "perfect score" },
+      { symbol: "✅", label: "check", keywords: "done yes complete" },
+      { symbol: "❌", label: "cross", keywords: "no cancel close" },
+      { symbol: "➕", label: "plus", keywords: "add" },
+      { symbol: "❗", label: "important", keywords: "warning alert" },
+      { symbol: "❓", label: "question", keywords: "help ask" },
+      { symbol: "⚠️", label: "warning", keywords: "alert" }
+    ]
+  };
+  const richStickerOptions: StickerItem[] = [
+    { label: "Star", value: "🌟", color: "bg-amber-100", keywords: "favorite shine" },
+    { label: "Perfect", value: "💯", color: "bg-rose-100", keywords: "hundred best" },
+    { label: "Clap", value: "👏", color: "bg-indigo-100", keywords: "applause good" },
+    { label: "Hands", value: "🙌", color: "bg-sky-100", keywords: "yay celebrate" },
+    { label: "Rocket", value: "🚀", color: "bg-purple-100", keywords: "fast launch" },
+    { label: "Done", value: "✅", color: "bg-emerald-100", keywords: "complete yes" },
+    { label: "Love", value: "❤️", color: "bg-pink-100", keywords: "heart like" },
+    { label: "Fire", value: "🔥", color: "bg-orange-100", keywords: "hot nice" },
+    { label: "Thinking", value: "🤔", color: "bg-slate-100", keywords: "question maybe" },
+    { label: "LOL", value: "🤣", color: "bg-yellow-100", keywords: "laugh funny" },
+    { label: "Please", value: "🙏", color: "bg-blue-100", keywords: "request thanks" },
+    { label: "Wow", value: "😮", color: "bg-cyan-100", keywords: "surprise" }
+  ];
+  const richGifOptions: GifItem[] = [
+    { label: "Deal with it", value: "😎 Deal with it", icon: "😎", keywords: "cool sunglasses" },
+    { label: "Nice", value: "🔥 Nice!", icon: "🔥", keywords: "good fire" },
+    { label: "LOL", value: "😂 LOL", icon: "😂", keywords: "laugh funny" },
+    { label: "Congrats", value: "🎉 Congrats!", icon: "🎉", keywords: "celebrate party" },
+    { label: "On it", value: "✅ On it", icon: "✅", keywords: "done working" },
+    { label: "Wow", value: "😮 Wow!", icon: "😮", keywords: "surprise shock" },
+    { label: "Please", value: "🙏 Please", icon: "🙏", keywords: "request" },
+    { label: "Done", value: "💯 Done", icon: "💯", keywords: "complete perfect" },
+    { label: "Party", value: "🥳 Party time", icon: "🥳", keywords: "celebrate" },
+    { label: "Typing fast", value: "⚡ Typing fast", icon: "⚡", keywords: "quick speed" },
+    { label: "Good morning", value: "☀️ Good morning", icon: "☀️", keywords: "hello day" },
+    { label: "Good night", value: "🌙 Good night", icon: "🌙", keywords: "sleep bye" }
+  ];
+  const searchNeedle = emojiSearch.trim().toLowerCase();
+  const matchesSearch = (item: { label: string; keywords: string; value?: string; symbol?: string }) =>
+    !searchNeedle || `${item.label} ${item.keywords} ${item.value ?? ""} ${item.symbol ?? ""}`.toLowerCase().includes(searchNeedle);
+  const filteredEmojiGroups = Object.fromEntries(
+    Object.entries(richEmojiGroups).map(([category, items]) => [category, items.filter(matchesSearch)])
+  ) as Record<EmojiCategory, EmojiItem[]>;
+  const filteredEmojiOptions = Object.values(filteredEmojiGroups).flat();
+  const filteredStickerOptions = richStickerOptions.filter(matchesSearch);
+  const filteredGifOptions = richGifOptions.filter(matchesSearch);
   const callPeerId = activeCall ? (activeCall.caller_id === user?.id ? activeCall.callee_id : activeCall.caller_id) : null;
   const callPeer = callPeerId ? friends.find((friend) => friend.user.id === callPeerId)?.user : null;
 
@@ -264,6 +398,12 @@ export function MessengerPage() {
     setLastMessages(Object.fromEntries(lastEntries));
   };
 
+  const selectConversation = (conversation: Conversation) => {
+    setActiveView("chat");
+    setSelected(conversation);
+    navigate(`/app/chat/${conversation.id}`);
+  };
+
   const showChatView = () => {
     setActiveView("chat");
   };
@@ -271,6 +411,7 @@ export function MessengerPage() {
   const showPeopleView = () => {
     setActiveView("people");
     setSelected(null);
+    navigate("/app");
     loadAll().catch(() => undefined);
   };
 
@@ -646,6 +787,19 @@ export function MessengerPage() {
   }, [selected]);
 
   useEffect(() => {
+    if (!routeConversationId || !Number.isFinite(routeConversationId)) {
+      if (selected) setSelected(null);
+      return;
+    }
+    if (selected?.id === routeConversationId) return;
+    const conversation = conversations.find((item) => item.id === routeConversationId);
+    if (conversation) {
+      setActiveView("chat");
+      setSelected(conversation);
+    }
+  }, [conversations, routeConversationId, selected?.id]);
+
+  useEffect(() => {
     scrollMessagesToBottom();
   }, [messages.length, selected?.id]);
 
@@ -701,9 +855,8 @@ export function MessengerPage() {
   const openConversation = async (friend: Friend) => {
     const conversation = await chatApi.createConversation(friend.user.id);
     const merged = { ...conversation, peer: friend.user };
-    setActiveView("chat");
-    setSelected(merged);
     setConversations((current) => [merged, ...current.filter((item) => item.id !== merged.id)]);
+    selectConversation(merged);
   };
 
   const sendMessage = async (event: FormEvent) => {
@@ -766,18 +919,22 @@ export function MessengerPage() {
     setShowEmojiPanel(false);
   };
 
-  const toggleRecording = async (kind: "audio" | "video") => {
-    if (recordingKind) {
-      recorder.current?.stop();
-      return;
-    }
+  const startRecording = async (kind: "audio" | "video", facingMode = videoMessageFacingMode) => {
     setComposerError("");
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: true,
         video: kind === "video"
+          ? {
+              facingMode: { ideal: facingMode },
+              width: { ideal: 720, max: 1280 },
+              height: { ideal: 1280, max: 1280 },
+              frameRate: { ideal: 24, max: 30 }
+            }
+          : false
       });
       recordedChunks.current = [];
+      discardRecordingOnStop.current = false;
       const mimeType = recorderMimeType(kind);
       const mediaRecorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
       recorder.current = mediaRecorder;
@@ -790,6 +947,12 @@ export function MessengerPage() {
       };
       mediaRecorder.onstop = () => {
         stream.getTracks().forEach((track) => track.stop());
+        if (discardRecordingOnStop.current) {
+          discardRecordingOnStop.current = false;
+          recorder.current = null;
+          setRecordingKind(null);
+          return;
+        }
         const mime = mediaRecorder.mimeType || (kind === "video" ? "video/webm" : "audio/webm");
         const blob = new Blob(recordedChunks.current, { type: mime });
         const url = URL.createObjectURL(blob);
@@ -803,6 +966,26 @@ export function MessengerPage() {
       mediaRecorder.start();
     } catch {
       setComposerError(kind === "video" ? "Camera or microphone permission is blocked." : "Microphone permission is blocked.");
+    }
+  };
+
+  const toggleRecording = async (kind: "audio" | "video") => {
+    if (recordingKind) {
+      recorder.current?.stop();
+      return;
+    }
+    await startRecording(kind);
+  };
+
+  const switchVideoMessageCamera = async () => {
+    const nextMode = videoMessageFacingMode === "user" ? "environment" : "user";
+    setVideoMessageFacingMode(nextMode);
+    if (recordingKind === "video" && recorder.current) {
+      discardRecordingOnStop.current = true;
+      recorder.current.stop();
+      window.setTimeout(() => {
+        startRecording("video", nextMode).catch(() => undefined);
+      }, 150);
     }
   };
 
@@ -1574,7 +1757,12 @@ export function MessengerPage() {
                   <div className="min-h-0 overflow-y-auto p-3">
                     <div className="relative">
                       <Search className="absolute right-3 top-2.5 text-slate-400" size={16} />
-                      <input className="w-full rounded-md border border-[#d1d1e0] py-2 pl-3 pr-9 text-sm outline-none focus:border-[#6264a7]" placeholder="Find something fun" />
+                      <input
+                        value={emojiSearch}
+                        onChange={(event) => setEmojiSearch(event.target.value)}
+                        className="w-full rounded-md border border-[#d1d1e0] py-2 pl-3 pr-9 text-sm outline-none focus:border-[#6264a7]"
+                        placeholder="Find emoji, GIF, sticker"
+                      />
                     </div>
                     {emojiTab !== "gifs" && emojiTab !== "stickers" && (
                       <>
@@ -1583,9 +1771,9 @@ export function MessengerPage() {
                           <button type="button" onClick={() => setEmojiTab("emoji")} className="text-xs text-slate-500">See all</button>
                         </div>
                         <div className="mt-2 grid grid-cols-6 gap-2">
-                          {(emojiTab === "all" ? emojiOptions.slice(0, 36) : emojiGroups[emojiTab as keyof typeof emojiGroups]).map((emoji) => (
-                            <button key={emoji} type="button" onClick={() => setBody((value) => `${value}${emoji}`)} className="grid h-10 place-items-center rounded-md text-2xl hover:bg-[#ededfa]">
-                              {emoji}
+                          {(emojiTab === "all" ? filteredEmojiOptions.slice(0, 48) : filteredEmojiGroups[emojiTab as EmojiCategory]).map((emoji) => (
+                            <button key={`${emoji.symbol}-${emoji.label}`} type="button" onClick={() => setBody((value) => `${value}${emoji.symbol}`)} className="grid h-10 place-items-center rounded-md text-2xl hover:bg-[#ededfa]" title={emoji.label}>
+                              {emoji.symbol}
                             </button>
                           ))}
                         </div>
@@ -1598,7 +1786,7 @@ export function MessengerPage() {
                           <button type="button" onClick={() => setEmojiTab("stickers")} className="text-xs text-slate-500">See all</button>
                         </div>
                         <div className="mt-2 grid grid-cols-3 gap-2">
-                          {stickerOptions.map((sticker) => (
+                          {filteredStickerOptions.map((sticker) => (
                             <button
                               key={sticker.label}
                               type="button"
@@ -1619,7 +1807,7 @@ export function MessengerPage() {
                           <button type="button" onClick={() => setEmojiTab("gifs")} className="text-xs text-slate-500">See all</button>
                         </div>
                         <div className="mt-2 grid grid-cols-3 gap-2">
-                          {gifOptions.map((gif, index) => (
+                          {filteredGifOptions.map((gif, index) => (
                             <button
                               key={gif.value}
                               type="button"
@@ -1706,7 +1894,7 @@ export function MessengerPage() {
         <h2 className="mt-6 font-semibold">Conversations</h2>
         <div className="mt-3 space-y-2">
           {conversations.map((conversation) => (
-            <button key={conversation.id} onClick={() => setSelected(conversation)} className="w-full rounded-md border border-[#d1d1e0] bg-white p-3 text-left text-sm hover:bg-[#ededfa]">
+            <button key={conversation.id} onClick={() => selectConversation(conversation)} className="w-full rounded-md border border-[#d1d1e0] bg-white p-3 text-left text-sm hover:bg-[#ededfa]">
               <span className="block font-medium">{conversation.peer?.name ?? `Conversation ${conversation.id}`}</span>
               <span className={`block truncate text-xs ${messageUnread(lastMessages[conversation.id], user?.id) ? "font-bold text-slate-900" : "text-slate-500"}`}>
                 {messagePreview(lastMessages[conversation.id], user?.id)}
@@ -1764,7 +1952,16 @@ export function MessengerPage() {
                   )}
                 </div>
               ) : recordingPreview.stream ? (
-                <video ref={recordingPreviewVideo} muted autoPlay playsInline className="aspect-video w-full object-cover" />
+                <div className="relative">
+                  <video ref={recordingPreviewVideo} muted autoPlay playsInline className="aspect-video w-full object-cover" />
+                  <button
+                    type="button"
+                    onClick={switchVideoMessageCamera}
+                    className="absolute right-3 top-3 rounded-md bg-slate-950/70 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-900"
+                  >
+                    {videoMessageFacingMode === "user" ? "Back camera" : "Front camera"}
+                  </button>
+                </div>
               ) : (
                 <video key={recordingPreview.url} src={recordingPreview.url} controls playsInline className="aspect-video w-full object-cover" />
               )}
