@@ -177,6 +177,8 @@ export function MessengerPage() {
   const recordedChunks = useRef<Blob[]>([]);
   const discardRecordingOnStop = useRef(false);
   const messageSwipe = useRef<{ id: number; x: number } | null>(null);
+  const selectedRef = useRef<Conversation | null>(selected);
+  const optimisticMessageId = useRef(-1);
   const audioOutputIdRef = useRef(audioOutputId);
   const activeCallRef = useRef<CallLog | null>(activeCall);
   const localStreamRef = useRef<MediaStream | null>(localStream);
@@ -564,7 +566,35 @@ export function MessengerPage() {
     reply_to_message_id?: number | null;
   }) => {
     if (!selected) return false;
-    return sendSocketPayload(chatSocket.current, {
+    const replyToMessageId = payload.reply_to_message_id ?? replyingTo?.id ?? null;
+    const outgoingMessage: Message = {
+      id: optimisticMessageId.current--,
+      conversation_id: selected.id,
+      sender_id: user?.id ?? 0,
+      body: payload.body,
+      message_type: payload.message_type ?? "text",
+      attachment_url: payload.attachment_url ?? null,
+      attachment_name: payload.attachment_name ?? null,
+      attachment_mime: payload.attachment_mime ?? null,
+      attachment_size: payload.attachment_size ?? null,
+      reply_to_message_id: replyToMessageId,
+      reply_to: replyingTo
+        ? {
+            id: replyingTo.id,
+            sender_id: replyingTo.sender_id,
+            body: replyingTo.body,
+            message_type: replyingTo.message_type,
+            attachment_name: replyingTo.attachment_name
+          }
+        : null,
+      deleted_for_everyone: false,
+      created_at: new Date().toISOString(),
+      read_by: []
+    };
+    setMessages((current) => [...current, outgoingMessage]);
+    setLastMessages((current) => ({ ...current, [selected.id]: outgoingMessage }));
+    window.setTimeout(() => scrollMessagesToBottom("auto"), 0);
+    const sent = sendSocketPayload(chatSocket.current, {
       type: "message",
       conversation_id: selected.id,
       body: payload.body,
@@ -573,8 +603,12 @@ export function MessengerPage() {
       attachment_name: payload.attachment_name,
       attachment_mime: payload.attachment_mime,
       attachment_size: payload.attachment_size,
-      reply_to_message_id: payload.reply_to_message_id ?? replyingTo?.id ?? null
+      reply_to_message_id: replyToMessageId
     });
+    if (!sent) {
+      setComposerError("Message connection is reconnecting. Try again in a moment.");
+    }
+    return sent;
   };
 
   const absoluteMediaUrl = (value?: string | null) => {
@@ -733,12 +767,26 @@ export function MessengerPage() {
         if (nextMessage.sender_id !== user?.id) {
           playMessageSound();
         }
-        setMessages((current) =>
-          current.some((message) => message.id === nextMessage.id) ? current : [...current, nextMessage]
-        );
+        if (selectedRef.current?.id === nextMessage.conversation_id) {
+          setMessages((current) => {
+            if (current.some((message) => message.id === nextMessage.id)) return current;
+            const optimisticIndex = current.findIndex((message) =>
+              message.id < 0 &&
+              message.sender_id === nextMessage.sender_id &&
+              message.conversation_id === nextMessage.conversation_id &&
+              message.body === nextMessage.body &&
+              message.message_type === nextMessage.message_type &&
+              (message.attachment_url ?? null) === (nextMessage.attachment_url ?? null)
+            );
+            if (optimisticIndex >= 0) {
+              return current.map((message, index) => (index === optimisticIndex ? nextMessage : message));
+            }
+            return [...current, nextMessage];
+          });
+          scrollMessagesToBottom();
+        }
         setLastMessages((current) => ({ ...current, [nextMessage.conversation_id]: nextMessage }));
         loadAll().catch(() => undefined);
-        scrollMessagesToBottom();
       }
       if (payload.type === "message:deleted") {
         if (payload.scope === "me") {
@@ -981,6 +1029,10 @@ export function MessengerPage() {
     };
     applyOutput().catch(() => undefined);
   }, [audioOutputId]);
+
+  useEffect(() => {
+    selectedRef.current = selected;
+  }, [selected]);
 
   const search = async (value: string) => {
     setQuery(value);
@@ -2212,22 +2264,7 @@ export function MessengerPage() {
               )}
               <input ref={fileInput} type="file" className="hidden" onChange={(event) => handleFileSelect(event.target.files?.[0])} />
               <input ref={mediaInput} type="file" accept="image/*,video/*,audio/*" className="hidden" onChange={(event) => handleFileSelect(event.target.files?.[0])} />
-              <div className="flex gap-2">
-                <button type="button" onClick={() => setShowEmojiPanel((value) => !value)} className="grid h-12 w-10 place-items-center rounded-md text-[#464775] hover:bg-[#ededfa]" title="Emoji, GIF, sticker">
-                  <Laugh size={18} />
-                </button>
-                <button type="button" onClick={() => fileInput.current?.click()} className="grid h-12 w-10 place-items-center rounded-md text-[#464775] hover:bg-[#ededfa]" title="Attach file">
-                  <Paperclip size={18} />
-                </button>
-                <button type="button" onClick={() => mediaInput.current?.click()} className="grid h-12 w-10 place-items-center rounded-md text-[#464775] hover:bg-[#ededfa]" title="Attach media">
-                  <Image size={18} />
-                </button>
-                <button type="button" onClick={() => toggleRecording("audio")} className={`grid h-12 w-10 place-items-center rounded-md ${recordingKind === "audio" ? "bg-[#c4314b] text-white" : "text-[#464775] hover:bg-[#ededfa]"}`} title="Voice message">
-                  {recordingKind === "audio" ? <Square size={16} /> : <Mic size={18} />}
-                </button>
-                <button type="button" onClick={() => toggleRecording("video")} className={`grid h-12 w-10 place-items-center rounded-md ${recordingKind === "video" ? "bg-[#c4314b] text-white" : "text-[#464775] hover:bg-[#ededfa]"}`} title="Video message">
-                  {recordingKind === "video" ? <Square size={16} /> : <Video size={18} />}
-                </button>
+              <div className="flex items-center rounded-md border border-[#d1d1e0] bg-white shadow-sm focus-within:border-[#6264a7] focus-within:ring-1 focus-within:ring-[#6264a7]">
                 <input
                   value={body}
                   onChange={(event) => {
@@ -2238,11 +2275,31 @@ export function MessengerPage() {
                       sendSocketPayload(chatSocket.current, { type: "typing", conversation_id: selected.id, is_typing: false });
                     }, 900);
                   }}
-                  className="min-w-0 flex-1 rounded-md border border-[#d1d1e0] bg-white px-4 py-3 outline-none focus:border-[#6264a7]"
+                  className="min-w-0 flex-1 rounded-md bg-transparent px-3 py-3 outline-none sm:px-4"
                   placeholder={uploading ? "Uploading..." : recordingKind ? "Recording..." : "Type a new message"}
                   disabled={uploading}
                 />
-                <button className="grid h-12 w-12 place-items-center rounded-md bg-[#6264a7] text-white disabled:opacity-60" disabled={uploading || !body.trim()} title="Send"><Send size={18} /></button>
+                <div className="flex shrink-0 items-center gap-0.5 pr-1 text-[#464775] sm:gap-1 sm:pr-2">
+                  <button type="button" onClick={() => setShowEmojiPanel((value) => !value)} className="grid h-9 w-8 place-items-center rounded-md hover:bg-[#ededfa] sm:w-9" title="Emoji, GIF, sticker">
+                    <Laugh size={18} />
+                  </button>
+                  <button type="button" onClick={() => fileInput.current?.click()} className="grid h-9 w-8 place-items-center rounded-md hover:bg-[#ededfa] sm:w-9" title="Attach file">
+                    <Paperclip size={18} />
+                  </button>
+                  <button type="button" onClick={() => mediaInput.current?.click()} className="grid h-9 w-8 place-items-center rounded-md hover:bg-[#ededfa] sm:w-9" title="Attach media">
+                    <Image size={18} />
+                  </button>
+                  <button type="button" onClick={() => toggleRecording("audio")} className={`grid h-9 w-8 place-items-center rounded-md sm:w-9 ${recordingKind === "audio" ? "bg-[#c4314b] text-white" : "hover:bg-[#ededfa]"}`} title="Voice message">
+                    {recordingKind === "audio" ? <Square size={16} /> : <Mic size={18} />}
+                  </button>
+                  <button type="button" onClick={() => toggleRecording("video")} className={`hidden h-9 w-9 place-items-center rounded-md sm:grid ${recordingKind === "video" ? "bg-[#c4314b] text-white" : "hover:bg-[#ededfa]"}`} title="Video message">
+                    {recordingKind === "video" ? <Square size={16} /> : <Video size={18} />}
+                  </button>
+                  <span className="mx-1 h-7 w-px bg-[#ddddec]" />
+                  <button className="grid h-9 w-9 place-items-center rounded-md text-[#464775] hover:bg-[#ededfa] disabled:opacity-40" disabled={uploading || !body.trim()} title="Send">
+                    <Send size={19} />
+                  </button>
+                </div>
               </div>
             </form>
           </>
