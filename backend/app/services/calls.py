@@ -58,9 +58,7 @@ class CallService:
         active_calls = await self.calls.list_active_for_user(user_id)
         ended_calls: list[CallLog] = []
         for call in active_calls:
-            if call.state == "accepted":
-                ended_calls.append(await self.calls.set_state(call, "ended"))
-            elif call.state == "ringing" and call.caller_id == user_id:
+            if call.state == "ringing" and call.caller_id == user_id:
                 ended_calls.append(await self.calls.set_state(call, "missed"))
         if ended_calls:
             await self.session.commit()

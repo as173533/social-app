@@ -170,8 +170,16 @@ function callEventText(message) {
         return `${label} started at ${formatCallEventTime(message.created_at)}`;
     }
     const duration = Number.parseInt(durationSeconds ?? "0", 10);
-    const stateLabel = state === "missed" ? "ended" : "ended";
-    return `${label} ${stateLabel} at ${formatCallEventTime(message.created_at)} - Duration ${formatCallDuration(Number.isFinite(duration) ? duration : 0)}`;
+    if (state === "missed") {
+        return `${label} missed at ${formatCallEventTime(message.created_at)}`;
+    }
+    if (state === "rejected") {
+        return `${label} rejected at ${formatCallEventTime(message.created_at)}`;
+    }
+    if (!Number.isFinite(duration) || duration <= 0) {
+        return `${label} ended at ${formatCallEventTime(message.created_at)}`;
+    }
+    return `${label} ended at ${formatCallEventTime(message.created_at)} - Duration ${formatCallDuration(duration)}`;
 }
 function messagePreview(message, currentUserId) {
     if (!message)
@@ -220,6 +228,7 @@ export function MessengerPage() {
     const [selected, setSelected] = useState(null);
     const [replyingTo, setReplyingTo] = useState(null);
     const [messageMenu, setMessageMenu] = useState(null);
+    const [reactionMenu, setReactionMenu] = useState(null);
     const [pinnedMessageIds, setPinnedMessageIds] = useState([]);
     const [pinnedStorageReadyKey, setPinnedStorageReadyKey] = useState(null);
     const [locallyUnreadIds, setLocallyUnreadIds] = useState([]);
@@ -306,6 +315,7 @@ export function MessengerPage() {
     const localStreamRef = useRef(localStream);
     const closedCallIds = useRef(new Set());
     const callEndMessageSentIds = useRef(new Set());
+    const previousMessageScroll = useRef({ selectedId: null, length: 0 });
     const peer = selected?.peer ?? null;
     const pinnedStorageKey = user?.id ? `chatMessengerPinnedMessages:${user.id}` : null;
     const routeConversationId = decodeChatId(conversationId);
@@ -509,7 +519,12 @@ export function MessengerPage() {
         const days = Math.floor(hours / 24);
         return `last seen ${days} day${days === 1 ? "" : "s"} ago`;
     };
-    const callDurationSeconds = (call) => Math.max(0, Math.floor((Date.now() - new Date(call.started_at).getTime()) / 1000));
+    const callDurationSeconds = (call) => {
+        if (!call?.answered_at)
+            return 0;
+        const endedAt = call.ended_at ? new Date(call.ended_at).getTime() : Date.now();
+        return Math.max(0, Math.floor((endedAt - new Date(call.answered_at).getTime()) / 1000));
+    };
     const selectedMatchesCall = (call) => {
         if (!selected || !user)
             return false;
@@ -682,6 +697,12 @@ export function MessengerPage() {
         window.requestAnimationFrame(scroll);
         window.setTimeout(scroll, 40);
     };
+    const isMessagesNearBottom = (threshold = 180) => {
+        const container = messagesContainer.current;
+        if (!container)
+            return true;
+        return container.scrollHeight - container.scrollTop - container.clientHeight <= threshold;
+    };
     const forceScrollMessagesToBottom = () => {
         scrollMessagesToBottom("auto");
         window.setTimeout(() => scrollMessagesToBottom("auto"), 80);
@@ -729,7 +750,6 @@ export function MessengerPage() {
         if (!items)
             return;
         setMessages((current) => mergeMessageLists(current, items.map(normalizeMessage), conversationId));
-        forceScrollMessagesToBottom();
     };
     const mediaErrorMessage = (error, callType) => {
         if (error instanceof DOMException) {
@@ -809,7 +829,8 @@ export function MessengerPage() {
                 : null,
             deleted_for_everyone: false,
             created_at: new Date().toISOString(),
-            read_by: []
+            read_by: [],
+            reactions: []
         };
         setMessages((current) => [...current, outgoingMessage]);
         setLastMessages((current) => ({ ...current, [selected.id]: outgoingMessage }));
@@ -947,16 +968,19 @@ export function MessengerPage() {
         return () => document.removeEventListener("pointerdown", unlockAudio);
     }, [audioOutputId]);
     useEffect(() => {
-        if (!messageMenu)
+        if (!messageMenu && !reactionMenu)
             return;
-        const closeMenu = () => setMessageMenu(null);
+        const closeMenu = () => {
+            setMessageMenu(null);
+            setReactionMenu(null);
+        };
         window.addEventListener("pointerdown", closeMenu);
         window.addEventListener("scroll", closeMenu, true);
         return () => {
             window.removeEventListener("pointerdown", closeMenu);
             window.removeEventListener("scroll", closeMenu, true);
         };
-    }, [messageMenu]);
+    }, [messageMenu, reactionMenu]);
     useEffect(() => {
         if (!accessToken)
             return;
@@ -976,6 +1000,7 @@ export function MessengerPage() {
                     playMessageSound();
                 }
                 if (isOpenConversationMessage(nextMessage)) {
+                    const shouldScrollAfterMessage = nextMessage.sender_id === user?.id || isMessagesNearBottom();
                     setMessages((current) => {
                         if (current.some((message) => message.id === nextMessage.id))
                             return current;
@@ -1012,13 +1037,17 @@ export function MessengerPage() {
                         return [...current, nextMessage];
                     });
                     setUnreadCounts((current) => ({ ...current, [nextMessage.conversation_id]: 0 }));
-                    forceScrollMessagesToBottom();
+                    if (shouldScrollAfterMessage)
+                        forceScrollMessagesToBottom();
+                    else
+                        setShowScrollDown(true);
                 }
                 else if (nextMessage.sender_id !== user?.id) {
                     setUnreadCounts((current) => ({ ...current, [nextMessage.conversation_id]: (current[nextMessage.conversation_id] ?? 0) + 1 }));
                 }
                 setLastMessages((current) => ({ ...current, [nextMessage.conversation_id]: nextMessage }));
-                refreshOpenMessages(nextMessage.conversation_id).catch(() => undefined);
+                if (isMessagesNearBottom())
+                    refreshOpenMessages(nextMessage.conversation_id).then(() => forceScrollMessagesToBottom()).catch(() => undefined);
             }
             if (payload.type === "message:deleted") {
                 if (payload.scope === "me") {
@@ -1035,6 +1064,12 @@ export function MessengerPage() {
                 setMessages((current) => current.map((message) => message.id === payload.message_id
                     ? { ...message, reactions: Array.isArray(payload.reactions) ? payload.reactions : [] }
                     : message));
+                setDecryptedMessages((current) => Object.fromEntries(Object.entries(current).map(([messageId, message]) => [
+                    messageId,
+                    Number(messageId) === Number(payload.message_id)
+                        ? { ...message, reactions: Array.isArray(payload.reactions) ? payload.reactions : [] }
+                        : message
+                ])));
                 setLastMessages((current) => Object.fromEntries(Object.entries(current).map(([conversationId, message]) => [
                     conversationId,
                     message?.id === payload.message_id
@@ -1133,8 +1168,8 @@ export function MessengerPage() {
                 else {
                     ringtone.current.stop();
                 }
-                if (payload.type === "call:state" && payload.call.state === "accepted" && payload.call.caller_id === user?.id) {
-                    const peerId = payload.call.callee_id;
+                if (payload.type === "call:state" && payload.call.state === "accepted") {
+                    const peerId = payload.call.caller_id === user?.id ? payload.call.callee_id : payload.call.caller_id;
                     const wantsVideo = payload.call.call_type === "video";
                     if (!localStreamRef.current) {
                         const stream = await rtc.current?.startLocal(wantsVideo, { audioInputId, videoInputId });
@@ -1142,7 +1177,9 @@ export function MessengerPage() {
                             setLocalStream(stream);
                         }
                     }
-                    await rtc.current?.createOffer(peerId).catch(() => setCallError("Could not start media after the call was accepted."));
+                    if (peerId && (!rtc.current?.peer || payload.call.caller_id === user?.id)) {
+                        await rtc.current?.createOffer(peerId).catch(() => setCallError("Could not start media after the call was accepted."));
+                    }
                 }
             }
             if (payload.type === "webrtc:offer") {
@@ -1324,7 +1361,16 @@ export function MessengerPage() {
         }
     }, [conversations, routeConversationId, selected?.id]);
     useEffect(() => {
-        forceScrollMessagesToBottom();
+        const previous = previousMessageScroll.current;
+        const selectedChanged = previous.selectedId !== selected?.id;
+        const grew = messages.length > previous.length;
+        previousMessageScroll.current = { selectedId: selected?.id ?? null, length: messages.length };
+        if (selectedChanged || (grew && isMessagesNearBottom())) {
+            forceScrollMessagesToBottom();
+        }
+        else if (grew) {
+            setShowScrollDown(true);
+        }
     }, [messages.length, selected?.id]);
     useEffect(() => {
         setPinnedStorageReadyKey(null);
@@ -1461,7 +1507,14 @@ export function MessengerPage() {
     const openMessageMenu = (message, event) => {
         event.preventDefault();
         event.stopPropagation();
+        setReactionMenu(null);
         setMessageMenu({ message, x: event.clientX, y: event.clientY });
+    };
+    const openReactionMenu = (message, event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        setMessageMenu(null);
+        setReactionMenu({ message, x: event.clientX, y: event.clientY });
     };
     const copyMessageText = async (message) => {
         await navigator.clipboard?.writeText(message.body || message.attachment_url || "");
@@ -1472,7 +1525,14 @@ export function MessengerPage() {
         setMessageMenu(null);
     };
     const pinMessage = (message) => {
-        setPinnedMessageIds((current) => current.includes(message.id) ? current : [...current, message.id]);
+        setPinnedMessageIds((current) => current.includes(message.id) ? current.filter((id) => id !== message.id) : [...current, message.id]);
+        setMessageMenu(null);
+    };
+    const editMessageDraft = (message) => {
+        if (message.sender_id !== user?.id || message.deleted_for_everyone)
+            return;
+        setBody(message.body || "");
+        setReplyingTo(null);
         setMessageMenu(null);
     };
     const reactToMessage = async (message, emoji) => {
@@ -1483,11 +1543,17 @@ export function MessengerPage() {
             { user_id: user.id, emoji }
         ];
         setMessages((current) => current.map((item) => item.id === message.id ? { ...item, reactions } : item));
+        setDecryptedMessages((current) => current[message.id] ? { ...current, [message.id]: { ...current[message.id], reactions } } : current);
+        setLastMessages((current) => Object.fromEntries(Object.entries(current).map(([conversationId, item]) => [
+            conversationId,
+            item?.id === message.id ? { ...item, reactions } : item
+        ])));
         if (!sendSocketPayload(chatSocket.current, { type: "message:reaction", message_id: message.id, emoji })) {
             const updated = await chatApi.reactToMessage(message.id, emoji);
             setMessages((current) => current.map((item) => item.id === message.id ? normalizeMessage(updated) : item));
         }
         setMessageMenu(null);
+        setReactionMenu(null);
     };
     const markMessageUnread = (message) => {
         setLocallyUnreadIds((current) => current.includes(message.id) ? current : [...current, message.id]);
@@ -1513,8 +1579,9 @@ export function MessengerPage() {
         if (callEndMessageSentIds.current.has(call.id) || !selectedMatchesCall(call))
             return;
         callEndMessageSentIds.current.add(call.id);
+        const duration = state === "ended" ? callDurationSeconds(call) : 0;
         sendChatMessage({
-            body: `__call__:${call.call_type}:end:${state}:${callDurationSeconds(call)}`,
+            body: `__call__:${call.call_type}:end:${state}:${duration}`,
             message_type: "call"
         });
     };
@@ -2432,12 +2499,12 @@ export function MessengerPage() {
                         {QUICK_REACTIONS.map((reaction) => (<button key={reaction} type="button" onClick={() => reactToMessage(message, reaction)} className="grid h-8 w-8 place-items-center rounded-md hover:bg-[#ededfa]" title={`React ${reaction}`}>
                             {reaction}
                           </button>))}
-                        <button type="button" onClick={(event) => openMessageMenu(message, event)} className="grid h-8 w-8 place-items-center rounded-md border-l border-[#e6e6f2] pl-1 text-[#464775] hover:bg-[#ededfa]" title="More reactions">
+                        <button type="button" onClick={(event) => openReactionMenu(message, event)} className="grid h-8 w-8 place-items-center rounded-md border-l border-[#e6e6f2] pl-1 text-[#464775] hover:bg-[#ededfa]" title="More reactions">
                           <Laugh size={18}/>
                         </button>
-                        <button type="button" onClick={() => setReplyingTo(message)} className="grid h-8 w-8 place-items-center rounded-md border-l border-[#e6e6f2] pl-1 text-[#464775] hover:bg-[#ededfa]" title="Reply">
+                        {mine && !message.deleted_for_everyone && (<button type="button" onClick={() => editMessageDraft(message)} className="grid h-8 w-8 place-items-center rounded-md border-l border-[#e6e6f2] pl-1 text-[#464775] hover:bg-[#ededfa]" title="Edit">
                           <Edit3 size={17}/>
-                        </button>
+                        </button>)}
                         <button type="button" onClick={(event) => openMessageMenu(message, event)} className="grid h-8 w-8 place-items-center rounded-md text-[#464775] hover:bg-[#ededfa]" title="Message actions">
                           <MoreHorizontal size={18}/>
                         </button>
@@ -2459,11 +2526,6 @@ export function MessengerPage() {
                         </>)}
                       <div className={`mt-1 flex items-center justify-between gap-3 text-[11px] ${mine ? "text-blue-100" : "text-slate-400"}`}>
                         <span>{mine && peer && includesNumber(message.read_by, peer.id) ? "Read" : "Sent"}</span>
-                        <span className="flex gap-2 opacity-0 transition group-hover:opacity-100">
-                          {!message.deleted_for_everyone && <button type="button" onClick={() => setReplyingTo(message)} className="underline">Reply</button>}
-                          <button type="button" onClick={() => deleteMessage(message, "me")} className="underline">Delete me</button>
-                          {mine && !message.deleted_for_everyone && <button type="button" onClick={() => deleteMessage(message, "everyone")} className="underline">Delete all</button>}
-                        </span>
                       </div>
                       {reactionCounts.length > 0 && (<div className={`absolute -bottom-4 ${mine ? "right-3" : "left-3"} flex rounded-full border border-[#e6e6f2] bg-white px-1.5 py-0.5 text-xs text-slate-700 shadow-sm`}>
                           {reactionCounts.map(([emoji, count]) => (<button key={emoji} type="button" onClick={() => reactToMessage(message, emoji)} className="flex items-center gap-0.5 rounded-full px-1 hover:bg-[#ededfa]">
@@ -2666,6 +2728,24 @@ export function MessengerPage() {
             </div>
           </section>
         </div>)}
+      {reactionMenu && (<div className="fixed z-[96] w-72 overflow-hidden rounded-lg border border-[#ddddec] bg-white p-3 text-sm text-slate-700 shadow-2xl" style={{
+                left: Math.min(reactionMenu.x, window.innerWidth - 304),
+                top: Math.min(reactionMenu.y, window.innerHeight - 320)
+            }} onPointerDown={(event) => event.stopPropagation()}>
+          <div className="flex items-center justify-between border-b border-[#eeeef7] pb-2">
+            <span className="font-semibold">React to message</span>
+            <button type="button" onClick={() => setReactionMenu(null)} className="grid h-7 w-7 place-items-center rounded-md hover:bg-[#f5f5fb]">
+              <X size={15}/>
+            </button>
+          </div>
+          <div className="mt-3 grid max-h-64 grid-cols-7 gap-1 overflow-y-auto pr-1 text-xl">
+            {[...QUICK_REACTIONS, "😢", "🙏", "👏", "🔥", "🎉", "👀", "💯", "✅", ...filteredEmojiOptions.slice(0, 84).map((item) => item.symbol)]
+                .filter((reaction, index, all) => reaction && all.indexOf(reaction) === index)
+                .map((reaction) => (<button key={reaction} type="button" onClick={() => reactToMessage(reactionMenu.message, reaction)} className="grid h-9 w-9 place-items-center rounded-md hover:bg-[#ededfa]">
+                  {reaction}
+                </button>))}
+          </div>
+        </div>)}
       {messageMenu && (<div className="fixed z-[95] w-64 overflow-hidden rounded-md border border-[#ddddec] bg-white py-2 text-sm text-slate-700 shadow-2xl" style={{
                 left: Math.min(messageMenu.x, window.innerWidth - 272),
                 top: Math.min(messageMenu.y, window.innerHeight - 360)
@@ -2675,13 +2755,14 @@ export function MessengerPage() {
                 { label: "Forward", icon: <Forward size={17}/>, action: () => { setReplyingTo(messageMenu.message); setMessageMenu(null); } },
                 { label: "Copy text", icon: <Copy size={17}/>, action: () => copyMessageText(messageMenu.message) },
                 { label: "Copy link", icon: <LinkIcon size={17}/>, action: () => copyMessageLink(messageMenu.message) },
-                { label: "Edit", icon: <Edit3 size={17}/>, action: () => { if (messageMenu.message.sender_id === user?.id && !messageMenu.message.deleted_for_everyone)
-                        setBody(messageMenu.message.body); setMessageMenu(null); } },
+                ...(messageMenu.message.sender_id === user?.id && !messageMenu.message.deleted_for_everyone
+                    ? [{ label: "Edit", icon: <Edit3 size={17}/>, action: () => editMessageDraft(messageMenu.message) }]
+                    : []),
                 { label: "Delete for me", icon: <Trash2 size={17}/>, action: () => { deleteMessage(messageMenu.message, "me"); setMessageMenu(null); } },
                 ...(messageMenu.message.sender_id === user?.id && !messageMenu.message.deleted_for_everyone
                     ? [{ label: "Delete for everyone", icon: <Trash2 size={17}/>, action: () => { deleteMessage(messageMenu.message, "everyone"); setMessageMenu(null); } }]
                     : []),
-                { label: "Pin", icon: <Pin size={17}/>, action: () => pinMessage(messageMenu.message) },
+                { label: pinnedMessageIds.includes(messageMenu.message.id) ? "Unpin" : "Pin", icon: <Pin size={17}/>, action: () => pinMessage(messageMenu.message) },
                 { label: "Mark as unread", icon: <Bell size={17}/>, action: () => markMessageUnread(messageMenu.message) },
                 { label: "Translation", icon: <Languages size={17}/>, action: () => setMessageMenu(null) }
             ].map((item) => (<button key={item.label} type="button" onClick={item.action} className="flex w-full items-center gap-3 px-4 py-2.5 text-left hover:bg-[#f5f5fb]">
@@ -2689,7 +2770,7 @@ export function MessengerPage() {
               <span className="flex-1">{item.label}</span>
               {item.label === "Translation" && <ChevronDown size={15} className="-rotate-90"/>}
             </button>))}
-          <div className="mt-1 flex items-center justify-between border-t border-[#eeeef7] px-3 pt-2 text-lg">
+          <div className="hidden">
             {["👍", "❤️", "😂", "😮", "😢"].map((reaction) => (<button key={reaction} type="button" onClick={() => { setBody((value) => `${value}${reaction}`); setMessageMenu(null); }} className="grid h-8 w-8 place-items-center rounded-md hover:bg-[#f5f5fb]">
                 {reaction}
               </button>))}
