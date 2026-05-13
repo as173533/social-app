@@ -238,6 +238,7 @@ export function MessengerPage() {
     const messageSwipe = useRef(null);
     const selectedRef = useRef(selected);
     const selectedConversationIdRef = useRef(selected?.id ?? null);
+    const routeConversationIdRef = useRef(routeConversationId);
     const optimisticMessageId = useRef(-1);
     const audioOutputIdRef = useRef(audioOutputId);
     const activeCallRef = useRef(activeCall);
@@ -579,6 +580,19 @@ export function MessengerPage() {
         window.requestAnimationFrame(scroll);
         window.setTimeout(scroll, 40);
     };
+    const forceScrollMessagesToBottom = () => {
+        scrollMessagesToBottom("auto");
+        window.setTimeout(() => scrollMessagesToBottom("auto"), 80);
+        window.setTimeout(() => scrollMessagesToBottom("auto"), 220);
+    };
+    const currentPathConversationId = () => {
+        const match = window.location.pathname.match(/\/app\/chat\/(\d+)/);
+        return match ? Number.parseInt(match[1], 10) : null;
+    };
+    const isOpenConversationMessage = (message) => {
+        const activeId = selectedConversationIdRef.current ?? selectedRef.current?.id ?? routeConversationIdRef.current ?? currentPathConversationId();
+        return Number(activeId) === Number(message.conversation_id);
+    };
     const mediaErrorMessage = (error, callType) => {
         if (error instanceof DOMException) {
             if (error.name === "NotFoundError") {
@@ -789,7 +803,7 @@ export function MessengerPage() {
                 if (nextMessage.sender_id !== user?.id) {
                     playMessageSound();
                 }
-                if (Number(selectedConversationIdRef.current) === Number(nextMessage.conversation_id)) {
+                if (isOpenConversationMessage(nextMessage)) {
                     setMessages((current) => {
                         if (current.some((message) => message.id === nextMessage.id))
                             return current;
@@ -804,7 +818,7 @@ export function MessengerPage() {
                         }
                         return [...current, nextMessage];
                     });
-                    scrollMessagesToBottom();
+                    forceScrollMessagesToBottom();
                 }
                 setLastMessages((current) => ({ ...current, [nextMessage.conversation_id]: nextMessage }));
                 loadAll().catch(() => undefined);
@@ -1010,10 +1024,12 @@ export function MessengerPage() {
     }, [emojiSearch, emojiTab]);
     useEffect(() => {
         if (!routeConversationId || !Number.isFinite(routeConversationId)) {
+            routeConversationIdRef.current = null;
             if (selected)
                 setSelected(null);
             return;
         }
+        routeConversationIdRef.current = routeConversationId;
         if (selected?.id === routeConversationId)
             return;
         const conversation = conversations.find((item) => item.id === routeConversationId);
@@ -1025,7 +1041,7 @@ export function MessengerPage() {
         }
     }, [conversations, routeConversationId, selected?.id]);
     useEffect(() => {
-        scrollMessagesToBottom();
+        forceScrollMessagesToBottom();
     }, [messages.length, selected?.id]);
     useEffect(() => {
         if (!selected || !user)
@@ -1069,6 +1085,9 @@ export function MessengerPage() {
         selectedRef.current = selected;
         selectedConversationIdRef.current = selected?.id ?? null;
     }, [selected]);
+    useEffect(() => {
+        routeConversationIdRef.current = routeConversationId;
+    }, [routeConversationId]);
     const search = async (value) => {
         setQuery(value);
         setSearchError("");
