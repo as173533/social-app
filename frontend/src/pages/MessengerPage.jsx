@@ -928,6 +928,7 @@ export function MessengerPage() {
             conversationId,
             message?.id === editingMessage.id ? optimisticMessage : message
         ])));
+        setDecryptedLastMessages((current) => ({ ...current, [editingMessage.id]: optimisticMessage }));
         setEditingMessage(null);
         setBody("");
         const payload = {
@@ -943,6 +944,11 @@ export function MessengerPage() {
             });
             setMessages((current) => current.map((message) => message.id === editingMessage.id ? normalizeMessage(updated) : message));
             setDecryptedMessages((current) => {
+                const next = { ...current };
+                delete next[editingMessage.id];
+                return next;
+            });
+            setDecryptedLastMessages((current) => {
                 const next = { ...current };
                 delete next[editingMessage.id];
                 return next;
@@ -1175,6 +1181,11 @@ export function MessengerPage() {
                     delete next[editedMessage.id];
                     return next;
                 });
+                setDecryptedLastMessages((current) => {
+                    const next = { ...current };
+                    delete next[editedMessage.id];
+                    return next;
+                });
                 setLastMessages((current) => ({ ...current, [editedMessage.conversation_id]: editedMessage }));
             }
             if (payload.type === "message:reaction") {
@@ -1371,12 +1382,22 @@ export function MessengerPage() {
             setMessages([]);
             setDecryptedMessages({});
             setDecryptedReplyMessages({});
+            setDecryptedLastMessages((current) => {
+                const next = { ...current };
+                Object.values(lastMessages).forEach((message) => {
+                    if (message?.conversation_id === selected.id)
+                        delete next[message.id];
+                });
+                return next;
+            });
             setEditingMessage(null);
             setHasOlderMessages(true);
             setTypingUserId(null);
             chatApi.messages(selected.id).then((items) => {
                 setMessages((current) => mergeMessageLists(current, items.map(normalizeMessage), selected.id));
                 setHasOlderMessages(items.length >= 50);
+                window.setTimeout(() => forceScrollMessagesToBottom(), 0);
+                window.setTimeout(() => forceScrollMessagesToBottom(), 120);
             });
         }
         else {

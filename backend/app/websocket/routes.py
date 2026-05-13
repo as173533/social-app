@@ -235,7 +235,32 @@ async def call_socket(websocket: WebSocket):
         if not call_manager.has_connections(user_id):
             async with AsyncSessionLocal() as session:
                 ended_calls = await CallService(session).end_disconnected_calls_for_user(user_id)
+                missed_messages = []
+                chat_service = ChatService(session)
+                for call in ended_calls:
+                    if call.state != "missed":
+                        continue
+                    conversation = await chat_service.get_or_create_conversation(call.caller_id, call.callee_id)
+                    message = await chat_service.create_message(
+                        call.caller_id,
+                        conversation.id,
+                        MessageCreate(body=f"__call__:{call.call_type}:end:missed:0", message_type="call"),
+                    )
+                    missed_messages.append((message, [call.caller_id, call.callee_id]))
             for call in ended_calls:
                 event = {"type": "call:state", "call": jsonable_model(call)}
                 await call_manager.send_to_user(call.caller_id, event)
                 await call_manager.send_to_user(call.callee_id, event)
+            for message, recipient_ids in missed_messages:
+                event = {
+                    "type": "message",
+                    "message": {
+                        **jsonable_model(message),
+                        "read_by": [],
+                        "reactions": [],
+                        "deleted_for_everyone": False,
+                        "reply_to": None,
+                    },
+                }
+                for recipient_id in recipient_ids:
+                    await chat_manager.send_to_user(recipient_id, event)
