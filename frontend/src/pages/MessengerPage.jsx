@@ -243,6 +243,12 @@ export function MessengerPage() {
     const [activeCall, setActiveCall] = useState(null);
     const [callError, setCallError] = useState("");
     const [callMinimized, setCallMinimized] = useState(false);
+    const [callFullscreen, setCallFullscreen] = useState(false);
+    const [callSize, setCallSize] = useState("large");
+    const [callRecording, setCallRecording] = useState(false);
+    const [showCallPeople, setShowCallPeople] = useState(false);
+    const [showCallView, setShowCallView] = useState(false);
+    const [showCallMore, setShowCallMore] = useState(false);
     const [callTick, setCallTick] = useState(0);
     const [micMuted, setMicMuted] = useState(false);
     const [cameraOff, setCameraOff] = useState(false);
@@ -259,6 +265,7 @@ export function MessengerPage() {
     const [audioOutputId, setAudioOutputId] = useState("");
     const [pendingOffer, setPendingOffer] = useState(null);
     const chatSocket = useRef(null);
+    const chatSendQueue = useRef([]);
     const callSocket = useRef(null);
     const rtc = useRef(null);
     const ringtone = useRef(new RingtonePlayer());
@@ -275,6 +282,8 @@ export function MessengerPage() {
     const callTimeoutTimer = useRef(null);
     const callDrag = useRef(null);
     const recorder = useRef(null);
+    const callRecorder = useRef(null);
+    const callRecordedChunks = useRef([]);
     const recordingPreviewVideo = useRef(null);
     const recordedChunks = useRef([]);
     const discardRecordingOnStop = useRef(false);
@@ -537,6 +546,16 @@ export function MessengerPage() {
         setRemoteStream(null);
         setPendingOffer(null);
         setCallMinimized(false);
+        setCallFullscreen(false);
+        setShowCallPeople(false);
+        setShowCallView(false);
+        setShowCallMore(false);
+        if (callRecorder.current && callRecorder.current.state !== "inactive") {
+            callRecorder.current.stop();
+        }
+        callRecorder.current = null;
+        callRecordedChunks.current = [];
+        setCallRecording(false);
         setScreenSharing(false);
         setMicMuted(false);
         setCameraOff(false);
@@ -694,15 +713,38 @@ export function MessengerPage() {
     };
     const sendSocketPayload = (socket, payload) => {
         if (socket?.readyState === WebSocket.OPEN) {
-            socket.send(JSON.stringify(payload));
-            return true;
+            try {
+                socket.send(JSON.stringify(payload));
+                return true;
+            }
+            catch {
+                return false;
+            }
         }
         return false;
+    };
+    const flushChatSendQueue = () => {
+        const socket = chatSocket.current;
+        if (socket?.readyState !== WebSocket.OPEN || !chatSendQueue.current.length)
+            return;
+        const queued = [...chatSendQueue.current];
+        chatSendQueue.current = [];
+        queued.forEach((payload) => socket.send(JSON.stringify(payload)));
+        setComposerError("");
+    };
+    const sendOrQueueChatPayload = (payload) => {
+        if (sendSocketPayload(chatSocket.current, payload)) {
+            setComposerError("");
+            return true;
+        }
+        chatSendQueue.current.push(payload);
+        return true;
     };
     const sendChatMessage = async (payload) => {
         if (!selected)
             return false;
         const replyToMessageId = payload.reply_to_message_id ?? replyingTo?.id ?? null;
+        const clientMessageId = window.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
         let encryptedPayload;
         try {
             encryptedPayload = await encryptOutgoingMessage(selected, user, payload);
@@ -721,6 +763,7 @@ export function MessengerPage() {
             attachment_name: payload.attachment_name ?? null,
             attachment_mime: payload.attachment_mime ?? null,
             attachment_size: payload.attachment_size ?? null,
+            client_message_id: clientMessageId,
             reply_to_message_id: replyToMessageId,
             reply_to: replyingTo
                 ? {
@@ -738,7 +781,7 @@ export function MessengerPage() {
         setMessages((current) => [...current, outgoingMessage]);
         setLastMessages((current) => ({ ...current, [selected.id]: outgoingMessage }));
         window.setTimeout(() => scrollMessagesToBottom("auto"), 0);
-        const sent = sendSocketPayload(chatSocket.current, {
+        const sent = sendOrQueueChatPayload({
             type: "message",
             conversation_id: selected.id,
             body: encryptedPayload.body,
@@ -747,11 +790,9 @@ export function MessengerPage() {
             attachment_name: encryptedPayload.attachment_name,
             attachment_mime: encryptedPayload.attachment_mime,
             attachment_size: encryptedPayload.attachment_size,
+            client_message_id: clientMessageId,
             reply_to_message_id: replyToMessageId
         });
-        if (!sent) {
-            setComposerError("Message connection is reconnecting. Try again in a moment.");
-        }
         return sent;
     };
     const absoluteMediaUrl = (value) => {
@@ -906,13 +947,34 @@ export function MessengerPage() {
                         if (current.some((message) => message.id === nextMessage.id))
                             return current;
                         const optimisticIndex = current.findIndex((message) => message.id < 0 &&
+                            message.client_message_id &&
+                            message.client_message_id === nextMessage.client_message_id);
+                        if (optimisticIndex >= 0) {
+                            return current.map((message, index) => (index === optimisticIndex ? {
+                                ...nextMessage,
+                                body: message.body,
+                                message_type: message.message_type,
+                                attachment_name: message.attachment_name,
+                                attachment_mime: message.attachment_mime,
+                                attachment_size: message.attachment_size,
+                                e2ee_decrypted: true
+                            } : message));
+                        }
+                        const legacyOptimisticIndex = current.findIndex((message) => message.id < 0 &&
                             message.sender_id === nextMessage.sender_id &&
                             message.conversation_id === nextMessage.conversation_id &&
-                            message.body === nextMessage.body &&
                             message.message_type === nextMessage.message_type &&
                             (message.attachment_url ?? null) === (nextMessage.attachment_url ?? null));
-                        if (optimisticIndex >= 0) {
-                            return current.map((message, index) => (index === optimisticIndex ? nextMessage : message));
+                        if (legacyOptimisticIndex >= 0) {
+                            return current.map((message, index) => (index === legacyOptimisticIndex ? {
+                                ...nextMessage,
+                                body: message.body,
+                                message_type: message.message_type,
+                                attachment_name: message.attachment_name,
+                                attachment_mime: message.attachment_mime,
+                                attachment_size: message.attachment_size,
+                                e2ee_decrypted: true
+                            } : message));
                         }
                         return [...current, nextMessage];
                     });
@@ -924,7 +986,6 @@ export function MessengerPage() {
                 }
                 setLastMessages((current) => ({ ...current, [nextMessage.conversation_id]: nextMessage }));
                 refreshOpenMessages(nextMessage.conversation_id).catch(() => undefined);
-                loadAll().catch(() => undefined);
             }
             if (payload.type === "message:deleted") {
                 if (payload.scope === "me") {
@@ -1057,6 +1118,7 @@ export function MessengerPage() {
                 return;
             const chat = new WebSocket(`${WS_URL}/ws/chat?token=${accessToken}`);
             chatSocket.current = chat;
+            chat.onopen = flushChatSendQueue;
             chat.onmessage = handleChatMessage;
             chat.onerror = () => chat.close();
             chat.onclose = () => {
@@ -1094,6 +1156,7 @@ export function MessengerPage() {
                 window.clearTimeout(typingClearTimer.current);
                 typingClearTimer.current = null;
             }
+            chatSendQueue.current = [];
             chatSocket.current?.close();
             callSocket.current?.close();
             chatSocket.current = null;
@@ -1582,8 +1645,50 @@ export function MessengerPage() {
             track.enabled = !nextOff;
         });
     };
+    const toggleCallRecording = () => {
+        if (callRecorder.current && callRecorder.current.state !== "inactive") {
+            callRecorder.current.stop();
+            return;
+        }
+        const tracks = [
+            ...(remoteStream?.getTracks() ?? []),
+            ...(localStream?.getTracks() ?? [])
+        ];
+        if (!tracks.length) {
+            setCallError("No call media is available to record yet.");
+            return;
+        }
+        try {
+            const stream = new MediaStream(tracks);
+            const mimeType = recorderMimeType(activeCall?.call_type === "video" ? "video" : "audio");
+            const mediaRecorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+            callRecordedChunks.current = [];
+            callRecorder.current = mediaRecorder;
+            mediaRecorder.ondataavailable = (event) => {
+                if (event.data.size > 0)
+                    callRecordedChunks.current.push(event.data);
+            };
+            mediaRecorder.onstop = () => {
+                const mime = mediaRecorder.mimeType || (activeCall?.call_type === "video" ? "video/webm" : "audio/webm");
+                const blob = new Blob(callRecordedChunks.current, { type: mime });
+                callRecordedChunks.current = [];
+                callRecorder.current = null;
+                setCallRecording(false);
+                if (blob.size > 0) {
+                    uploadAndSend(blob, `call-recording-${Date.now()}.webm`, "Call recording").catch(() => setCallError("Could not save the call recording."));
+                }
+            };
+            mediaRecorder.start();
+            setCallRecording(true);
+            setCallError("");
+        }
+        catch {
+            setCallError("Call recording is not supported in this browser.");
+        }
+    };
     const startCallDrag = (event) => {
-        if (event.target.closest("button, input, select, textarea, video, audio, a"))
+        const blockedSelector = callMinimized ? "input, select, textarea, video, audio, a" : "button, input, select, textarea, video, audio, a";
+        if (event.target.closest(blockedSelector))
             return;
         event.currentTarget.setPointerCapture(event.pointerId);
         callDrag.current = {
@@ -1758,6 +1863,10 @@ export function MessengerPage() {
       </button>
       {callError && <p className="rounded-md bg-red-50 p-2 text-xs text-red-700">{callError}</p>}
     </div>);
+    const hasVideoCall = activeCall?.call_type === "video";
+    const hasCameraDevice = videoInputs.length > 0 || (localStream?.getVideoTracks().length ?? 0) > 0;
+    const showCameraControls = hasVideoCall && hasCameraDevice;
+    const participantCount = activeCall ? 2 : 0;
     const callPanel = activeCall ? (activeCall.state === "ringing" && activeCall.callee_id === user?.id ? (<div className="overflow-hidden rounded-lg bg-[#4a403d] text-white shadow-2xl shadow-slate-900/35">
       <div className="flex h-10 items-center justify-between px-3 text-xs">
         <span onPointerDown={startCallDrag} onPointerMove={moveCallDrag} onPointerUp={endCallDrag} onPointerCancel={endCallDrag} className="cursor-move select-none font-semibold">
@@ -1782,7 +1891,7 @@ export function MessengerPage() {
           </button>
         </div>
       </div>
-    </div>) : (<div className={callMinimized ? "rounded-lg border border-[#d1d1e0] bg-white p-2 shadow-2xl shadow-slate-900/20" : "flex h-full flex-col overflow-hidden rounded-lg border border-[#d1d1e0] bg-white shadow-2xl shadow-slate-900/25"}>
+    </div>) : (<div className={callMinimized ? "rounded-lg border border-[#d1d1e0] bg-white p-2 shadow-2xl shadow-slate-900/20" : "relative flex h-full flex-col overflow-hidden rounded-lg border border-[#d1d1e0] bg-white shadow-2xl shadow-slate-900/25"}>
       <audio ref={bindRemoteAudio} autoPlay/>
       <div className="flex h-16 shrink-0 items-center justify-between border-b border-[#ddddec] bg-white px-3">
         <div onPointerDown={startCallDrag} onPointerMove={moveCallDrag} onPointerUp={endCallDrag} onPointerCancel={endCallDrag} className="flex min-w-0 cursor-move select-none items-center gap-3">
@@ -1794,23 +1903,23 @@ export function MessengerPage() {
         <div className="flex items-center gap-1">
           {!callMinimized && (<>
               {[
-                { label: "Record", icon: <RefreshCcw size={18}/>, action: undefined },
+                { label: callRecording ? "Stop" : "Record", icon: callRecording ? <Square size={18}/> : <RefreshCcw size={18}/>, action: toggleCallRecording, active: callRecording },
                 { label: "Chat", icon: <MessageSquare size={18}/>, action: () => setCallMinimized(true) },
-                { label: "People", icon: <Users size={18}/>, action: undefined },
-                { label: "View", icon: <Grid2X2 size={18}/>, action: undefined },
-                { label: "More", icon: <MoreHorizontal size={20}/>, action: undefined }
-            ].map((item) => (<button key={item.label} onClick={item.action} className="hidden min-w-14 rounded-md px-2 py-1.5 text-xs text-slate-700 hover:bg-[#f3f3f8] md:grid md:place-items-center" title={item.label}>
+                { label: "People", icon: <Users size={18}/>, action: () => { setShowCallPeople((value) => !value); setShowCallView(false); setShowCallMore(false); } },
+                { label: "View", icon: <Grid2X2 size={18}/>, action: () => { setShowCallView((value) => !value); setShowCallPeople(false); setShowCallMore(false); } },
+                { label: "More", icon: <MoreHorizontal size={20}/>, action: () => { setShowCallMore((value) => !value); setShowCallPeople(false); setShowCallView(false); } }
+            ].map((item) => (<button key={item.label} onClick={item.action} className={`hidden min-w-14 rounded-md px-2 py-1.5 text-xs hover:bg-[#f3f3f8] md:grid md:place-items-center ${item.active ? "bg-[#6264a7] text-white" : "text-slate-700"}`} title={item.label}>
                   {item.icon}
                   <span className="mt-0.5">{item.label}</span>
                 </button>))}
               <span className="mx-1 hidden h-9 w-px bg-[#ddddec] md:block"/>
-              <button onClick={toggleCameraOff} className={`min-w-14 rounded-md px-2 py-1.5 text-xs ${cameraOff ? "bg-[#f3f3f8] text-slate-400" : "text-slate-700 hover:bg-[#f3f3f8]"}`} title={cameraOff ? "Turn camera on" : "Turn camera off"}>
+              {showCameraControls && (<button onClick={toggleCameraOff} className={`min-w-14 rounded-md px-2 py-1.5 text-xs ${cameraOff ? "bg-[#f3f3f8] text-slate-400" : "text-slate-700 hover:bg-[#f3f3f8]"}`} title={cameraOff ? "Turn camera on" : "Turn camera off"}>
                 <span className="grid place-items-center">{cameraOff ? <VideoOff size={18}/> : <Video size={18}/>}</span>
                 <span className="mt-0.5 block">Camera</span>
-              </button>
-              <button onClick={switchCamera} className="hidden min-w-10 rounded-md px-2 py-1.5 text-xs text-slate-700 hover:bg-[#f3f3f8] md:grid md:place-items-center" title="Switch camera">
+              </button>)}
+              {showCameraControls && videoInputs.length > 1 && (<button onClick={switchCamera} className="hidden min-w-10 rounded-md px-2 py-1.5 text-xs text-slate-700 hover:bg-[#f3f3f8] md:grid md:place-items-center" title="Switch camera">
                 <RefreshCcw size={17}/>
-              </button>
+              </button>)}
               <div className="relative">
                 <button onClick={toggleMicMute} className={`min-w-14 rounded-l-md px-2 py-1.5 text-xs ${micMuted ? "bg-[#f3f3f8] text-slate-400" : "text-slate-700 hover:bg-[#f3f3f8]"}`} title={micMuted ? "Unmute microphone" : "Mute microphone"}>
                   <span className="grid place-items-center">{micMuted ? <MicOff size={18}/> : <Mic size={18}/>}</span>
@@ -1862,7 +1971,10 @@ export function MessengerPage() {
               </button>
               <span className="mx-1 hidden h-9 w-px bg-[#ddddec] md:block"/>
             </>)}
-          <button onClick={() => setCallMinimized((value) => !value)} className="grid h-9 w-9 place-items-center rounded-md text-[#464775] hover:bg-[#ededfa]" title={callMinimized ? "Restore call" : "Minimize call"}>
+          {!callMinimized && (<button onClick={() => setCallFullscreen((value) => !value)} className="grid h-9 w-9 place-items-center rounded-md text-[#464775] hover:bg-[#ededfa]" title={callFullscreen ? "Exit full screen" : "Full screen"}>
+            <Maximize2 size={17}/>
+          </button>)}
+          <button onClick={() => { setCallMinimized((value) => !value); setCallFullscreen(false); }} className="grid h-9 w-9 place-items-center rounded-md text-[#464775] hover:bg-[#ededfa]" title={callMinimized ? "Restore call" : "Minimize call"}>
             {callMinimized ? <Maximize2 size={17}/> : <Minimize2 size={17}/>}
           </button>
           <button onClick={() => setCallState(activeCall.state === "ringing" ? "rejected" : "ended")} className="grid h-9 w-9 place-items-center rounded-md bg-[#c4314b] text-white hover:bg-[#a4263c]" title={activeCall.state === "ringing" && activeCall.callee_id === user?.id ? "Reject" : "End call"}>
@@ -1870,6 +1982,43 @@ export function MessengerPage() {
           </button>
         </div>
       </div>
+      {!callMinimized && (showCallPeople || showCallView || showCallMore) && (<div className="absolute right-3 top-16 z-[70] w-[min(92vw,320px)] rounded-lg border border-[#ddddec] bg-white p-3 text-sm text-slate-700 shadow-2xl">
+          {showCallPeople && (<div>
+              <p className="font-semibold text-slate-900">People in call</p>
+              <div className="mt-3 space-y-2">
+                {[callPeer, user].filter(Boolean).map((person) => (<div key={person.id} className="flex items-center gap-2 rounded-md bg-[#f7f7fc] p-2">
+                    <span className="grid h-8 w-8 place-items-center overflow-hidden rounded-full bg-[#6264a7] text-xs font-semibold text-white">
+                      {person.avatar ? <img src={avatarSrc(person.avatar)} alt={person.name} className="h-full w-full object-cover"/> : person.name?.slice(0, 1).toUpperCase()}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate">{person.id === user?.id ? `${person.name} (You)` : person.name}</span>
+                  </div>))}
+              </div>
+              <p className="mt-3 text-xs text-slate-500">{participantCount} participants</p>
+            </div>)}
+          {showCallView && (<div>
+              <p className="font-semibold text-slate-900">Call view</p>
+              <div className="mt-3 grid gap-2">
+                {[
+                    ["large", "Large view"],
+                    ["medium", "Medium window"],
+                    ["compact", "Compact window"]
+                ].map(([value, label]) => (<button key={value} type="button" onClick={() => { setCallSize(value); setCallFullscreen(false); }} className={`rounded-md px-3 py-2 text-left ${callSize === value && !callFullscreen ? "bg-[#6264a7] text-white" : "bg-[#f7f7fc] hover:bg-[#ededfa]"}`}>
+                    {label}
+                  </button>))}
+                <button type="button" onClick={() => setCallFullscreen((value) => !value)} className={`rounded-md px-3 py-2 text-left ${callFullscreen ? "bg-[#6264a7] text-white" : "bg-[#f7f7fc] hover:bg-[#ededfa]"}`}>
+                  {callFullscreen ? "Exit full screen" : "Full screen"}
+                </button>
+              </div>
+            </div>)}
+          {showCallMore && (<div>
+              <p className="font-semibold text-slate-900">More actions</p>
+              <div className="mt-3 grid gap-2">
+                <button type="button" onClick={() => setShowAudioMenu(true)} className="rounded-md bg-[#f7f7fc] px-3 py-2 text-left hover:bg-[#ededfa]">Audio settings</button>
+                <button type="button" onClick={toggleScreenShare} className="rounded-md bg-[#f7f7fc] px-3 py-2 text-left hover:bg-[#ededfa]">{screenSharing ? "Stop sharing" : "Share screen"}</button>
+                <button type="button" onClick={toggleCallRecording} className="rounded-md bg-[#f7f7fc] px-3 py-2 text-left hover:bg-[#ededfa]">{callRecording ? "Stop recording" : "Record call"}</button>
+              </div>
+            </div>)}
+        </div>)}
       {callMinimized ? (<button onClick={() => setCallMinimized(false)} className="mt-2 flex w-full items-center gap-3 text-left">
           <span className="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-full bg-[#c7d5e8] text-lg font-semibold text-[#123a63]">
             {callPeer?.avatar ? <img src={avatarSrc(callPeer.avatar)} alt={callPeer.name} className="h-full w-full object-cover"/> : (callPeer?.name ?? "C").slice(0, 1).toUpperCase()}
@@ -2341,14 +2490,18 @@ export function MessengerPage() {
               </button>);
         })}
         </div>
-        <h2 className="mt-6 font-semibold">Call devices</h2>
-        <div className="mt-3">{deviceControls}</div>
       </aside>
       {callPanel && (<div onPointerDown={startCallDrag} onPointerMove={moveCallDrag} onPointerUp={endCallDrag} onPointerCancel={endCallDrag} className={activeCall?.state === "ringing" && activeCall.callee_id === user?.id
                 ? "fixed bottom-16 right-4 z-50 w-[calc(100vw-2rem)] max-w-[360px]"
                 : callMinimized
-                    ? "fixed bottom-4 right-4 z-50 w-[calc(100vw-2rem)] max-w-[340px]"
-                    : "fixed inset-x-2 bottom-16 top-[4.25rem] z-50 overflow-hidden sm:inset-x-8 sm:bottom-4 lg:inset-x-[11vw] xl:inset-x-[12vw]"} style={{ transform: `translate(${callPosition.x}px, ${callPosition.y}px)` }}>
+                    ? "fixed bottom-4 right-4 z-50 w-[calc(100vw-2rem)] max-w-[340px] touch-none"
+                    : callFullscreen
+                        ? "fixed inset-0 z-50 overflow-hidden"
+                        : callSize === "compact"
+                            ? "fixed bottom-16 right-2 top-auto z-50 h-[min(72dvh,520px)] w-[calc(100vw-1rem)] max-w-[560px] overflow-hidden sm:bottom-4 sm:right-4"
+                            : callSize === "medium"
+                                ? "fixed bottom-16 right-2 top-[4.25rem] z-50 w-[calc(100vw-1rem)] max-w-[760px] overflow-hidden sm:bottom-4 sm:right-4"
+                                : "fixed inset-x-2 bottom-16 top-[4.25rem] z-50 overflow-hidden sm:inset-x-8 sm:bottom-4 lg:inset-x-[11vw] xl:inset-x-[12vw]"} style={{ transform: callFullscreen ? "none" : `translate(${callPosition.x}px, ${callPosition.y}px)` }}>
           {callPanel}
         </div>)}
       {showGroupModal && (<div className="fixed inset-0 z-[80] grid place-items-center bg-slate-950/50 px-4">

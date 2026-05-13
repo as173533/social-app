@@ -62,6 +62,8 @@ async def chat_socket(websocket: WebSocket):
                                 "attachment_name": None if reply.deleted_for_everyone_at else reply.attachment_name,
                             }
                 event = {"type": "message", "message": {**jsonable_model(message), "read_by": [], "deleted_for_everyone": False, "reply_to": reply_to}}
+                if payload.get("client_message_id"):
+                    event["message"]["client_message_id"] = str(payload["client_message_id"])
                 for recipient_id in recipient_ids:
                     if recipient_id:
                         await chat_manager.send_to_user(recipient_id, event)
