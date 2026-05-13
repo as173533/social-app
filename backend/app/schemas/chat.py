@@ -27,7 +27,7 @@ class GroupCreate(BaseModel):
 
 
 class MessageCreate(BaseModel):
-    body: str = Field(default="", max_length=5000)
+    body: str = Field(default="", max_length=200000)
     message_type: str = Field(default="text", max_length=20)
     attachment_url: str | None = Field(default=None, max_length=500)
     attachment_name: str | None = Field(default=None, max_length=255)

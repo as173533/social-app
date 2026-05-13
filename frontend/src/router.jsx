@@ -5,6 +5,7 @@ import { RouteError } from "./components/RouteError";
 import { LoginPage } from "./pages/LoginPage";
 import { ForgotPasswordPage } from "./pages/ForgotPasswordPage";
 import { MessengerPage } from "./pages/MessengerPage";
+import { ProfilePage } from "./pages/ProfilePage";
 import { RegisterPage } from "./pages/RegisterPage";
 const CHAT_ROUTE_PREFIX = "c";
 function encodeChatId(id) {
@@ -66,7 +67,8 @@ export const router = createBrowserRouter([
       </ProtectedRoute>),
         children: [
             { index: true, element: <MessengerPage /> },
-            { path: "chat/:conversationId", element: <MessengerPage /> }
+            { path: "chat/:conversationId", element: <MessengerPage /> },
+            { path: "profile", element: <ProfilePage /> }
         ]
     }
 ]);

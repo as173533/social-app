@@ -11,6 +11,7 @@ export const authApi = {
 export const userApi = {
     search: (q) => api.get("/users/search", { params: { q } }).then((r) => r.data),
     updateMe: (data) => api.patch("/users/me", data).then((r) => r.data),
+    updateE2EEKey: (e2ee_public_key) => api.put("/users/me/e2ee-key", { e2ee_public_key }).then((r) => r.data),
     uploadAvatar: (file) => {
         const data = new FormData();
         data.append("file", file);

@@ -32,7 +32,7 @@ async def chat_socket(websocket: WebSocket):
             event_type = payload.get("type")
             if event_type == "message":
                 conversation_id = int(payload["conversation_id"])
-                body = str(payload.get("body", "")).strip()
+                body = str(payload.get("body", ""))
                 message_payload = MessageCreate(
                     body=body,
                     message_type=str(payload.get("message_type", "text")),

@@ -19,6 +19,10 @@ class UserUpdate(BaseModel):
     bio: str | None = Field(default=None, max_length=500)
 
 
+class UserE2EEKeyUpdate(BaseModel):
+    e2ee_public_key: str = Field(min_length=20, max_length=10000)
+
+
 class UserPublic(BaseModel):
     id: int
     name: str
@@ -26,6 +30,7 @@ class UserPublic(BaseModel):
     phone: str
     avatar: str | None
     bio: str | None
+    e2ee_public_key: str | None = None
     created_at: datetime
     online: bool = False
 

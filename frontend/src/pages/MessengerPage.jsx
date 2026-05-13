@@ -4,6 +4,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { API_URL, WS_URL } from "../api/client";
 import { callApi, chatApi, friendApi, userApi } from "../api/services";
 import { useAuthStore } from "../stores/authStore";
+import { decryptIncomingMessage, encryptOutgoingMessage, isEncryptedBody } from "../utils/e2ee";
 import { RingtonePlayer } from "../utils/ringtone";
 import { WebRTCClient } from "../utils/webrtc";
 const GIPHY_API_KEY = import.meta.env.VITE_GIPHY_API_KEY;
@@ -117,6 +118,19 @@ const WHATSAPP_STYLE_EMOJI_GROUPS = {
 function normalizeMessage(message) {
     return { ...message, message_type: message.message_type ?? "text", read_by: Array.isArray(message.read_by) ? message.read_by : [] };
 }
+function mergeMessageLists(current, incoming, conversationId) {
+    const merged = new Map();
+    current
+        .filter((message) => Number(message.conversation_id) === Number(conversationId))
+        .forEach((message) => merged.set(message.id, normalizeMessage(message)));
+    incoming
+        .filter((message) => Number(message.conversation_id) === Number(conversationId))
+        .forEach((message) => merged.set(message.id, normalizeMessage(message)));
+    return [...merged.values()].sort((a, b) => {
+        const timeDelta = new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+        return timeDelta || a.id - b.id;
+    });
+}
 function includesNumber(values, value) {
     return Array.isArray(values) && values.includes(value);
 }
@@ -156,6 +170,8 @@ function callEventText(message) {
 function messagePreview(message, currentUserId) {
     if (!message)
         return "No messages yet";
+    if (isEncryptedBody(message.body))
+        return `${message.sender_id === currentUserId ? "You: " : ""}Encrypted message`;
     if (isCallEvent(message))
         return callEventText(message);
     if (message.message_type === "image")
@@ -190,6 +206,7 @@ export function MessengerPage() {
     const [conversations, setConversations] = useState([]);
     const [lastMessages, setLastMessages] = useState({});
     const [messages, setMessages] = useState([]);
+    const [decryptedMessages, setDecryptedMessages] = useState({});
     const [mentionRecords, setMentionRecords] = useState([]);
     const [callHistory, setCallHistory] = useState([]);
     const [selected, setSelected] = useState(null);
@@ -418,9 +435,10 @@ export function MessengerPage() {
         { label: "Good morning", value: "☀️ Good morning", icon: "☀️", keywords: "hello day" },
         { label: "Good night", value: "🌙 Good night", icon: "🌙", keywords: "sleep bye" }
     ];
+    const displayMessages = useMemo(() => messages.map((message) => decryptedMessages[message.id] ?? message), [decryptedMessages, messages]);
     const mentionMessages = mentionRecords.length
         ? mentionRecords
-        : messages.filter((message) => user && message.sender_id !== user.id && message.body.toLowerCase().includes(`@${user.name.toLowerCase()}`));
+        : displayMessages.filter((message) => user && message.sender_id !== user.id && !isEncryptedBody(message.body) && message.body.toLowerCase().includes(`@${user.name.toLowerCase()}`));
     const pickerEmojiGroups = Object.fromEntries(Object.entries(richEmojiGroups).map(([category, items]) => {
         const seen = new Set(items.map((item) => item.symbol));
         const extraItems = WHATSAPP_STYLE_EMOJI_GROUPS[category].filter((item) => !seen.has(item.symbol));
@@ -464,6 +482,8 @@ export function MessengerPage() {
     const messageSummary = (message) => {
         if (!message)
             return "";
+        if (isEncryptedBody(message.body))
+            return "Encrypted message";
         if (message.deleted_for_everyone)
             return "This message was deleted";
         if (message.attachment_name)
@@ -615,6 +635,15 @@ export function MessengerPage() {
         const activeId = selectedConversationIdRef.current ?? selectedRef.current?.id ?? routeConversationIdRef.current ?? currentPathConversationId();
         return Number(activeId) === Number(message.conversation_id);
     };
+    const refreshOpenMessages = async (conversationId) => {
+        if (!conversationId || !isOpenConversationMessage({ conversation_id: conversationId }))
+            return;
+        const items = await chatApi.messages(conversationId).catch(() => null);
+        if (!items)
+            return;
+        setMessages((current) => mergeMessageLists(current, items.map(normalizeMessage), conversationId));
+        forceScrollMessagesToBottom();
+    };
     const mediaErrorMessage = (error, callType) => {
         if (error instanceof DOMException) {
             if (error.name === "NotFoundError") {
@@ -635,10 +664,18 @@ export function MessengerPage() {
         }
         return false;
     };
-    const sendChatMessage = (payload) => {
+    const sendChatMessage = async (payload) => {
         if (!selected)
             return false;
         const replyToMessageId = payload.reply_to_message_id ?? replyingTo?.id ?? null;
+        let encryptedPayload;
+        try {
+            encryptedPayload = await encryptOutgoingMessage(selected, user, payload);
+        }
+        catch {
+            setComposerError("Could not encrypt this message. Ask your friend to sign in once, then try again.");
+            return false;
+        }
         const outgoingMessage = {
             id: optimisticMessageId.current--,
             conversation_id: selected.id,
@@ -669,12 +706,12 @@ export function MessengerPage() {
         const sent = sendSocketPayload(chatSocket.current, {
             type: "message",
             conversation_id: selected.id,
-            body: payload.body,
-            message_type: payload.message_type ?? "text",
-            attachment_url: payload.attachment_url,
-            attachment_name: payload.attachment_name,
-            attachment_mime: payload.attachment_mime,
-            attachment_size: payload.attachment_size,
+            body: encryptedPayload.body,
+            message_type: encryptedPayload.message_type ?? "text",
+            attachment_url: encryptedPayload.attachment_url,
+            attachment_name: encryptedPayload.attachment_name,
+            attachment_mime: encryptedPayload.attachment_mime,
+            attachment_size: encryptedPayload.attachment_size,
             reply_to_message_id: replyToMessageId
         });
         if (!sent) {
@@ -843,6 +880,7 @@ export function MessengerPage() {
                     forceScrollMessagesToBottom();
                 }
                 setLastMessages((current) => ({ ...current, [nextMessage.conversation_id]: nextMessage }));
+                refreshOpenMessages(nextMessage.conversation_id).catch(() => undefined);
                 loadAll().catch(() => undefined);
             }
             if (payload.type === "message:deleted") {
@@ -996,14 +1034,37 @@ export function MessengerPage() {
         if (selected) {
             selectedRef.current = selected;
             selectedConversationIdRef.current = selected.id;
-            chatApi.messages(selected.id).then((items) => setMessages(items.map(normalizeMessage)));
+            setDecryptedMessages({});
+            chatApi.messages(selected.id).then((items) => {
+                setMessages((current) => mergeMessageLists(current, items.map(normalizeMessage), selected.id));
+            });
         }
         else {
             selectedRef.current = null;
             selectedConversationIdRef.current = null;
             setMessages([]);
+            setDecryptedMessages({});
         }
     }, [selected]);
+    useEffect(() => {
+        if (!user || !messages.length)
+            return;
+        let cancelled = false;
+        const encrypted = messages.filter((message) => isEncryptedBody(message.body) && !decryptedMessages[message.id]);
+        if (!encrypted.length)
+            return;
+        Promise.all(encrypted.map((message) => decryptIncomingMessage(message, user))).then((items) => {
+            if (cancelled)
+                return;
+            const entries = items.filter(Boolean).map((message) => [message.id, normalizeMessage(message)]);
+            if (entries.length) {
+                setDecryptedMessages((current) => ({ ...current, ...Object.fromEntries(entries) }));
+            }
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, [decryptedMessages, messages, user]);
     useEffect(() => {
         if (emojiTab !== "gifs" || !GIPHY_API_KEY) {
             setGiphyResults([]);
@@ -1984,12 +2045,12 @@ export function MessengerPage() {
               {pinnedMessageIds.length > 0 && (<div className="sticky top-0 z-10 rounded-md border border-[#ddddec] bg-white/95 p-2 text-xs shadow-sm backdrop-blur">
                   <p className="font-semibold text-slate-700">Pinned</p>
                   <div className="mt-1 space-y-1">
-                    {messages.filter((message) => pinnedMessageIds.includes(message.id)).slice(-3).map((message) => (<button key={message.id} type="button" onClick={() => setReplyingTo(message)} className="block w-full truncate rounded bg-[#f7f7fc] px-2 py-1 text-left text-slate-600">
+                    {displayMessages.filter((message) => pinnedMessageIds.includes(message.id)).slice(-3).map((message) => (<button key={message.id} type="button" onClick={() => setReplyingTo(message)} className="block w-full truncate rounded bg-[#f7f7fc] px-2 py-1 text-left text-slate-600">
                         {messageSummary(message)}
                       </button>))}
                   </div>
                 </div>)}
-              {messages.map((rawMessage) => {
+              {displayMessages.map((rawMessage) => {
                 const message = normalizeMessage(rawMessage);
                 if (isCallEvent(message)) {
                     return (<div key={message.id} className="flex justify-center">
