@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.refresh_token import RefreshToken
@@ -29,3 +29,10 @@ class TokenRepository:
     async def revoke(self, token: RefreshToken) -> None:
         token.revoked_at = datetime.now(timezone.utc)
         await self.session.flush()
+
+    async def revoke_all_for_user(self, user_id: int) -> None:
+        await self.session.execute(
+            update(RefreshToken)
+            .where(RefreshToken.user_id == user_id, RefreshToken.revoked_at.is_(None))
+            .values(revoked_at=datetime.now(timezone.utc))
+        )

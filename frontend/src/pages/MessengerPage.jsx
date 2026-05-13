@@ -7,6 +7,28 @@ import { useAuthStore } from "../stores/authStore";
 import { RingtonePlayer } from "../utils/ringtone";
 import { WebRTCClient } from "../utils/webrtc";
 const GIPHY_API_KEY = import.meta.env.VITE_GIPHY_API_KEY;
+const CHAT_ROUTE_PREFIX = "c";
+function encodeChatId(id) {
+    const numericId = Number(id);
+    if (!Number.isFinite(numericId))
+        return "";
+    const core = numericId.toString(36);
+    const checksum = ((numericId * 1103515245 + 12345) >>> 0).toString(36).slice(0, 5);
+    return `${CHAT_ROUTE_PREFIX}-${core}-${checksum}`;
+}
+function decodeChatId(value) {
+    if (!value)
+        return null;
+    if (/^\d+$/.test(value))
+        return Number.parseInt(value, 10);
+    const parts = value.split("-");
+    if (parts.length !== 3 || parts[0] !== CHAT_ROUTE_PREFIX)
+        return null;
+    const id = Number.parseInt(parts[1], 36);
+    if (!Number.isFinite(id))
+        return null;
+    return id;
+}
 function emojiItems(symbols, labelPrefix, keywords) {
     return symbols.map((symbol, index) => ({ symbol, label: `${labelPrefix} ${index + 1}`, keywords }));
 }
@@ -238,7 +260,7 @@ export function MessengerPage() {
     const messageSwipe = useRef(null);
     const selectedRef = useRef(selected);
     const selectedConversationIdRef = useRef(selected?.id ?? null);
-    const routeConversationIdRef = useRef(routeConversationId);
+    const routeConversationIdRef = useRef(null);
     const optimisticMessageId = useRef(-1);
     const audioOutputIdRef = useRef(audioOutputId);
     const activeCallRef = useRef(activeCall);
@@ -246,7 +268,7 @@ export function MessengerPage() {
     const closedCallIds = useRef(new Set());
     const callEndMessageSentIds = useRef(new Set());
     const peer = selected?.peer ?? null;
-    const routeConversationId = conversationId ? Number.parseInt(conversationId, 10) : null;
+    const routeConversationId = decodeChatId(conversationId);
     const incomingRequests = useMemo(() => requests.filter((request) => request.receiver_id === user?.id && request.status === "pending"), [requests, user?.id]);
     const rejectedSentRequests = useMemo(() => requests.filter((request) => request.sender_id === user?.id && request.status === "rejected"), [requests, user?.id]);
     const friendIds = useMemo(() => new Set(friends.map((friend) => friend.user.id)), [friends]);
@@ -505,7 +527,7 @@ export function MessengerPage() {
         selectedRef.current = conversation;
         selectedConversationIdRef.current = conversation.id;
         setSelected(conversation);
-        navigate(`/app/chat/${conversation.id}`);
+        navigate(`/app/chat/${encodeChatId(conversation.id)}`);
     };
     const showChatView = () => {
         setActiveView("chat");
@@ -586,8 +608,8 @@ export function MessengerPage() {
         window.setTimeout(() => scrollMessagesToBottom("auto"), 220);
     };
     const currentPathConversationId = () => {
-        const match = window.location.pathname.match(/\/app\/chat\/(\d+)/);
-        return match ? Number.parseInt(match[1], 10) : null;
+        const match = window.location.pathname.match(/\/app\/chat\/([^/]+)/);
+        return match ? decodeChatId(match[1]) : null;
     };
     const isOpenConversationMessage = (message) => {
         const activeId = selectedConversationIdRef.current ?? selectedRef.current?.id ?? routeConversationIdRef.current ?? currentPathConversationId();
@@ -1158,7 +1180,7 @@ export function MessengerPage() {
         setMessageMenu(null);
     };
     const copyMessageLink = async (message) => {
-        await navigator.clipboard?.writeText(`${window.location.origin}/app/chat/${message.conversation_id}?message=${message.id}`);
+        await navigator.clipboard?.writeText(`${window.location.origin}/app/chat/${encodeChatId(message.conversation_id)}?message=${message.id}`);
         setMessageMenu(null);
     };
     const pinMessage = (message) => {

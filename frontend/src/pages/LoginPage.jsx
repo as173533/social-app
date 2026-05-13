@@ -80,6 +80,9 @@ export function LoginPage() {
               Password
               <input value={password} onChange={(event) => setPassword(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-3 outline-none transition focus:border-[#6264a7] focus:ring-2 focus:ring-[#6264a7]/15" placeholder="Enter your password" type="password" required/>
             </label>
+            <div className="text-right">
+              <Link className="text-sm font-semibold text-[#6264a7]" to="/forgot-password">Forgot password?</Link>
+            </div>
             <button className="w-full rounded-lg bg-[#6264a7] py-3 font-semibold text-white shadow-lg shadow-[#6264a7]/20 transition hover:bg-[#5557a0] disabled:opacity-60" disabled={loading}>
               {loading ? "Signing in..." : "Sign in"}
             </button>

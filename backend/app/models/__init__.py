@@ -2,6 +2,7 @@ from app.models.call import CallLog
 from app.models.conversation import Conversation, ConversationMember
 from app.models.friendship import FriendRequest, Friendship
 from app.models.message import Message, MessageDeletion, MessageRead
+from app.models.password_reset import PasswordResetOtp
 from app.models.refresh_token import RefreshToken
 from app.models.user import User
 
@@ -14,6 +15,7 @@ __all__ = [
     "Message",
     "MessageDeletion",
     "MessageRead",
+    "PasswordResetOtp",
     "RefreshToken",
     "User",
 ]
