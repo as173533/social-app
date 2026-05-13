@@ -9,7 +9,10 @@ from app.db.base import Base
 class Conversation(Base):
     __tablename__ = "conversations"
     __table_args__ = (
-        CheckConstraint("user1_id < user2_id", name="ck_conversations_ordered_pair"),
+        CheckConstraint(
+            "(conversation_type = 'direct' AND user1_id < user2_id) OR (conversation_type = 'group' AND user2_id IS NULL)",
+            name="ck_conversations_direct_pair_or_group",
+        ),
         UniqueConstraint("user1_id", "user2_id", name="uq_conversations_pair"),
     )
 
