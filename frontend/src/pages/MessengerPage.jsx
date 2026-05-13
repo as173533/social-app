@@ -237,6 +237,7 @@ export function MessengerPage() {
     const discardRecordingOnStop = useRef(false);
     const messageSwipe = useRef(null);
     const selectedRef = useRef(selected);
+    const selectedConversationIdRef = useRef(selected?.id ?? null);
     const optimisticMessageId = useRef(-1);
     const audioOutputIdRef = useRef(audioOutputId);
     const activeCallRef = useRef(activeCall);
@@ -500,6 +501,8 @@ export function MessengerPage() {
     };
     const selectConversation = (conversation) => {
         setActiveView("chat");
+        selectedRef.current = conversation;
+        selectedConversationIdRef.current = conversation.id;
         setSelected(conversation);
         navigate(`/app/chat/${conversation.id}`);
     };
@@ -786,7 +789,7 @@ export function MessengerPage() {
                 if (nextMessage.sender_id !== user?.id) {
                     playMessageSound();
                 }
-                if (selectedRef.current?.id === nextMessage.conversation_id) {
+                if (Number(selectedConversationIdRef.current) === Number(nextMessage.conversation_id)) {
                     setMessages((current) => {
                         if (current.some((message) => message.id === nextMessage.id))
                             return current;
@@ -955,7 +958,14 @@ export function MessengerPage() {
     }, [accessToken, user?.id]);
     useEffect(() => {
         if (selected) {
+            selectedRef.current = selected;
+            selectedConversationIdRef.current = selected.id;
             chatApi.messages(selected.id).then((items) => setMessages(items.map(normalizeMessage)));
+        }
+        else {
+            selectedRef.current = null;
+            selectedConversationIdRef.current = null;
+            setMessages([]);
         }
     }, [selected]);
     useEffect(() => {
@@ -1009,6 +1019,8 @@ export function MessengerPage() {
         const conversation = conversations.find((item) => item.id === routeConversationId);
         if (conversation) {
             setActiveView("chat");
+            selectedRef.current = conversation;
+            selectedConversationIdRef.current = conversation.id;
             setSelected(conversation);
         }
     }, [conversations, routeConversationId, selected?.id]);
@@ -1055,6 +1067,7 @@ export function MessengerPage() {
     }, [audioOutputId]);
     useEffect(() => {
         selectedRef.current = selected;
+        selectedConversationIdRef.current = selected?.id ?? null;
     }, [selected]);
     const search = async (value) => {
         setQuery(value);
