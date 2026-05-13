@@ -96,3 +96,11 @@ class AttachmentOut(BaseModel):
     mime: str
     size: int
     message_type: str
+
+
+class LinkPreviewOut(BaseModel):
+    url: str
+    title: str | None = None
+    description: str | None = None
+    image: str | None = None
+    site_name: str | None = None

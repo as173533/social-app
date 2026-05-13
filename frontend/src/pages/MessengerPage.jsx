@@ -10,6 +10,7 @@ import { WebRTCClient } from "../utils/webrtc";
 const GIPHY_API_KEY = import.meta.env.VITE_GIPHY_API_KEY;
 const CHAT_ROUTE_PREFIX = "c";
 const QUICK_REACTIONS = ["👍", "❤️", "😆", "😮"];
+const URL_PATTERN = /https?:\/\/[^\s<>"']+/i;
 function encodeChatId(id) {
     const numericId = Number(id);
     if (!Number.isFinite(numericId))
@@ -193,6 +194,10 @@ function messageDateLabel(value) {
         return "Yesterday";
     return new Intl.DateTimeFormat(undefined, { day: "2-digit", month: "short", year: "numeric" }).format(date);
 }
+function extractFirstUrl(text) {
+    const match = String(text ?? "").match(URL_PATTERN);
+    return match ? match[0].replace(/[),.;!?]+$/, "") : null;
+}
 function messagePreview(message, currentUserId) {
     if (!message)
         return "No messages yet";
@@ -236,6 +241,7 @@ export function MessengerPage() {
     const [decryptedReplyMessages, setDecryptedReplyMessages] = useState({});
     const [decryptedLastMessages, setDecryptedLastMessages] = useState({});
     const [unreadCounts, setUnreadCounts] = useState({});
+    const [linkPreviews, setLinkPreviews] = useState({});
     const [mentionRecords, setMentionRecords] = useState([]);
     const [callHistory, setCallHistory] = useState([]);
     const [selected, setSelected] = useState(null);
@@ -1430,6 +1436,20 @@ export function MessengerPage() {
         };
     }, [decryptedMessages, messages, user]);
     useEffect(() => {
+        const urls = displayMessages
+            .map((message) => message.message_type === "text" || message.message_type === "gif" ? extractFirstUrl(message.body) : null)
+            .filter(Boolean);
+        const missingUrls = [...new Set(urls)].filter((url) => !linkPreviews[url]);
+        if (!missingUrls.length)
+            return;
+        missingUrls.slice(0, 5).forEach((url) => {
+            setLinkPreviews((current) => ({ ...current, [url]: { loading: true } }));
+            chatApi.linkPreview(url)
+                .then((preview) => setLinkPreviews((current) => ({ ...current, [url]: { ...preview, loading: false } })))
+                .catch(() => setLinkPreviews((current) => ({ ...current, [url]: { failed: true, loading: false } })));
+        });
+    }, [displayMessages, linkPreviews]);
+    useEffect(() => {
         if (!user || !messages.length)
             return;
         let cancelled = false;
@@ -1694,7 +1714,10 @@ export function MessengerPage() {
         setMessageMenu(null);
     };
     const copyMessageLink = async (message) => {
-        await navigator.clipboard?.writeText(`${window.location.origin}/app/chat/${encodeChatId(message.conversation_id)}?message=${message.id}`);
+        const url = extractFirstUrl(message.body);
+        if (!url)
+            return;
+        await navigator.clipboard?.writeText(url);
         setMessageMenu(null);
     };
     const pinMessage = (message) => {
@@ -1734,6 +1757,23 @@ export function MessengerPage() {
     const markMessageUnread = (message) => {
         setLocallyUnreadIds((current) => current.includes(message.id) ? current : [...current, message.id]);
         setMessageMenu(null);
+    };
+    const renderLinkPreview = (message, mine) => {
+        const url = extractFirstUrl(message.body);
+        if (!url || (message.message_type === "gif" && message.body === url))
+            return null;
+        const preview = linkPreviews[url];
+        if (!preview || preview.loading || preview.failed)
+            return null;
+        return (<a href={preview.url || url} target="_blank" rel="noreferrer" className={`mt-2 block max-w-sm overflow-hidden rounded-lg border text-left shadow-sm transition hover:shadow-md ${mine ? "border-white/20 bg-white/10 text-white" : "border-[#ddddec] bg-white text-slate-900"}`}>
+            {preview.image && <img src={preview.image} alt={preview.title || "Link preview"} className="max-h-44 w-full object-cover"/>}
+            <span className="block space-y-1 p-3">
+              <span className={`block text-xs ${mine ? "text-blue-100" : "text-slate-500"}`}>{preview.site_name || new URL(url).hostname}</span>
+              <span className="block font-semibold leading-snug">{preview.title || url}</span>
+              {preview.description && <span className={`line-clamp-2 block text-xs leading-relaxed ${mine ? "text-blue-50" : "text-slate-600"}`}>{preview.description}</span>}
+              <span className={`block truncate text-xs ${mine ? "text-blue-100" : "text-[#6264a7]"}`}>{url}</span>
+            </span>
+          </a>);
     };
     const createGroup = async () => {
         const title = groupTitle.trim();
@@ -2713,6 +2753,7 @@ export function MessengerPage() {
                           <span className="truncate">{message.attachment_name ?? "Attachment"}</span>
                         </a>)}
                       {message.body && !(message.message_type === "gif" && message.body.startsWith("http")) && <p className={message.message_type === "emoji" || message.message_type === "sticker" ? "text-3xl" : ""}>{message.body}</p>}
+                      {renderLinkPreview(message, mine)}
                         </>)}
                       <div className={`mt-1 flex items-center justify-between gap-3 text-[11px] ${mine ? "text-blue-100" : "text-slate-400"}`}>
                         <span>{mine && peer && includesNumber(message.read_by, peer.id) ? "Read" : "Sent"}</span>
@@ -2954,7 +2995,7 @@ export function MessengerPage() {
                 { label: "Reply", icon: <Reply size={17}/>, action: () => { setEditingMessage(null); setReplyingTo(messageMenu.message); setMessageMenu(null); } },
                 { label: "Forward", icon: <Forward size={17}/>, action: () => { setEditingMessage(null); setReplyingTo(messageMenu.message); setMessageMenu(null); } },
                 { label: "Copy text", icon: <Copy size={17}/>, action: () => copyMessageText(messageMenu.message) },
-                { label: "Copy link", icon: <LinkIcon size={17}/>, action: () => copyMessageLink(messageMenu.message) },
+                ...(extractFirstUrl(messageMenu.message.body) ? [{ label: "Copy link", icon: <LinkIcon size={17}/>, action: () => copyMessageLink(messageMenu.message) }] : []),
                 ...(messageMenu.message.sender_id === user?.id && !messageMenu.message.deleted_for_everyone
                     ? [{ label: "Edit", icon: <Edit3 size={17}/>, action: () => editMessageDraft(messageMenu.message) }]
                     : []),

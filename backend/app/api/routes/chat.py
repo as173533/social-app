@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 from uuid import uuid4
 
@@ -7,10 +8,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_current_user
 from app.db.session import get_session
 from app.models.user import User
-from app.schemas.chat import AttachmentOut, ConversationOut, GroupCreate, MarkReadRequest, MessageCreate, MessageDeleteRequest, MessageEditRequest, MessageOut, MessageReactionOut, MessageReactionRequest, MessageReplyOut
+from app.schemas.chat import AttachmentOut, ConversationOut, GroupCreate, LinkPreviewOut, MarkReadRequest, MessageCreate, MessageDeleteRequest, MessageEditRequest, MessageOut, MessageReactionOut, MessageReactionRequest, MessageReplyOut
 from app.schemas.user import UserPublic
 from app.services.chat import ChatService
 from app.services.users import UserService
+from app.utils.link_preview import fetch_link_preview
 
 router = APIRouter()
 
@@ -101,6 +103,17 @@ async def list_conversations(current_user: User = Depends(get_current_user), ses
     service = ChatService(session)
     conversations = await service.list_conversations(current_user.id)
     return [await conversation_out(conversation, service, user_service, current_user.id) for conversation in conversations]
+
+
+@router.get("/link-preview", response_model=LinkPreviewOut)
+async def link_preview(
+    url: str = Query(min_length=8, max_length=2000),
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        return await asyncio.to_thread(fetch_link_preview, url)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Could not load link preview") from exc
 
 
 @router.get("/conversations/{conversation_id}/messages", response_model=list[MessageOut])

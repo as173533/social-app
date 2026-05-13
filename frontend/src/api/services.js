@@ -35,6 +35,7 @@ export const chatApi = {
     editMessage: (messageId, data) => api.patch(`/chat/messages/${messageId}`, data).then((r) => r.data),
     deleteMessage: (messageId, scope) => api.delete(`/chat/messages/${messageId}`, { data: { scope } }).then((r) => r.data),
     reactToMessage: (messageId, emoji) => api.post(`/chat/messages/${messageId}/reactions`, { emoji }).then((r) => r.data),
+    linkPreview: (url) => api.get("/chat/link-preview", { params: { url } }).then((r) => r.data),
     uploadAttachment: (conversationId, file, filename) => {
         const data = new FormData();
         data.append("file", file, filename);
