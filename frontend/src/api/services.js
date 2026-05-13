@@ -33,6 +33,7 @@ export const chatApi = {
     messages: (conversationId) => api.get(`/chat/conversations/${conversationId}/messages`).then((r) => r.data),
     send: (conversationId, data) => api.post(`/chat/conversations/${conversationId}/messages`, data).then((r) => r.data),
     deleteMessage: (messageId, scope) => api.delete(`/chat/messages/${messageId}`, { data: { scope } }).then((r) => r.data),
+    reactToMessage: (messageId, emoji) => api.post(`/chat/messages/${messageId}/reactions`, { emoji }).then((r) => r.data),
     uploadAttachment: (conversationId, file, filename) => {
         const data = new FormData();
         data.append("file", file, filename);

@@ -85,6 +85,8 @@ class ChatService:
             reply_to_message_id=payload.reply_to_message_id,
         )
         await self.session.commit()
+        await self.session.refresh(message)
+        return message
 
     async def delete_message(self, user_id: int, message_id: int, scope: str) -> Message:
         message = await self.chat.get_message_for_user(message_id, user_id)
@@ -101,8 +103,6 @@ class ChatService:
         await self.session.commit()
         await self.session.refresh(message)
         return message
-        await self.session.refresh(message)
-        return message
 
     async def mark_read(self, user_id: int, conversation_id: int, message_ids: list[int]) -> None:
         conversation = await self.chat.get_conversation_for_user(conversation_id, user_id)
@@ -110,3 +110,15 @@ class ChatService:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
         await self.chat.mark_read(message_ids, user_id)
         await self.session.commit()
+
+    async def react_to_message(self, user_id: int, message_id: int, emoji: str) -> Message:
+        message = await self.chat.get_message_for_user(message_id, user_id)
+        if not message:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
+        clean_emoji = emoji.strip()
+        if not clean_emoji:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Reaction is required")
+        await self.chat.set_reaction(message_id, user_id, clean_emoji[:16])
+        await self.session.commit()
+        await self.session.refresh(message)
+        return message

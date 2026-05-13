@@ -33,6 +33,17 @@ class MessageRead(Base):
     read_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class MessageReaction(Base):
+    __tablename__ = "message_reactions"
+    __table_args__ = (UniqueConstraint("message_id", "user_id", name="uq_message_reactions_once"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    message_id: Mapped[int] = mapped_column(ForeignKey("messages.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    emoji: Mapped[str] = mapped_column(String(16))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class MessageDeletion(Base):
     __tablename__ = "message_deletions"
     __table_args__ = (UniqueConstraint("message_id", "user_id", name="uq_message_deletions_once"),)

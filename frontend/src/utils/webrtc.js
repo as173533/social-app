@@ -99,18 +99,24 @@ export class WebRTCClient {
         return this.localStream;
     }
     async startScreenShare() {
-        const displayStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+        const displayStream = await navigator.mediaDevices.getDisplayMedia({
+            video: { frameRate: { ideal: 15, max: 30 } },
+            audio: false
+        });
         const screenTrack = displayStream.getVideoTracks()[0];
         if (!screenTrack) {
             throw new Error("Screen share did not provide a video track");
         }
+        screenTrack.contentHint = "detail";
         if (this.peer) {
             const sender = this.peer.getSenders().find((item) => item.track?.kind === "video");
             if (sender) {
                 await sender.replaceTrack(screenTrack);
+                await this.tuneSender(sender, "screen");
             }
             else {
-                this.peer.addTrack(screenTrack, displayStream);
+                const nextSender = this.peer.addTrack(screenTrack, displayStream);
+                await this.tuneSender(nextSender, "screen");
             }
         }
         return displayStream;
@@ -157,15 +163,15 @@ export class WebRTCClient {
         });
         return this.peer;
     }
-    async tuneSender(sender) {
+    async tuneSender(sender, mode = "camera") {
         if (sender.track?.kind !== "video")
             return;
         const parameters = sender.getParameters();
         parameters.encodings = parameters.encodings?.length ? parameters.encodings : [{}];
         parameters.encodings[0] = {
             ...parameters.encodings[0],
-            maxBitrate: 900000,
-            maxFramerate: 24,
+            maxBitrate: mode === "screen" ? 1600000 : 900000,
+            maxFramerate: mode === "screen" ? 15 : 24,
             scaleResolutionDownBy: 1
         };
         await sender.setParameters(parameters);

@@ -46,6 +46,13 @@ class MessageReplyOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class MessageReactionOut(BaseModel):
+    user_id: int
+    emoji: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class MessageOut(BaseModel):
     id: int
     conversation_id: int
@@ -61,6 +68,7 @@ class MessageOut(BaseModel):
     deleted_for_everyone: bool = False
     created_at: datetime
     read_by: list[int] = []
+    reactions: list[MessageReactionOut] = []
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -71,6 +79,10 @@ class MarkReadRequest(BaseModel):
 
 class MessageDeleteRequest(BaseModel):
     scope: str = Field(pattern="^(me|everyone)$")
+
+
+class MessageReactionRequest(BaseModel):
+    emoji: str = Field(min_length=1, max_length=16)
 
 
 class AttachmentOut(BaseModel):

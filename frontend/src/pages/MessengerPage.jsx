@@ -9,6 +9,7 @@ import { RingtonePlayer } from "../utils/ringtone";
 import { WebRTCClient } from "../utils/webrtc";
 const GIPHY_API_KEY = import.meta.env.VITE_GIPHY_API_KEY;
 const CHAT_ROUTE_PREFIX = "c";
+const QUICK_REACTIONS = ["👍", "❤️", "😆", "😮"];
 function encodeChatId(id) {
     const numericId = Number(id);
     if (!Number.isFinite(numericId))
@@ -116,7 +117,12 @@ const WHATSAPP_STYLE_EMOJI_GROUPS = {
     ], "symbol", "heart symbol check warning plus sign whatsapp")
 };
 function normalizeMessage(message) {
-    return { ...message, message_type: message.message_type ?? "text", read_by: Array.isArray(message.read_by) ? message.read_by : [] };
+    return {
+        ...message,
+        message_type: message.message_type ?? "text",
+        read_by: Array.isArray(message.read_by) ? message.read_by : [],
+        reactions: Array.isArray(message.reactions) ? message.reactions : []
+    };
 }
 function mergeMessageLists(current, incoming, conversationId) {
     const merged = new Map();
@@ -215,7 +221,9 @@ export function MessengerPage() {
     const [replyingTo, setReplyingTo] = useState(null);
     const [messageMenu, setMessageMenu] = useState(null);
     const [pinnedMessageIds, setPinnedMessageIds] = useState([]);
+    const [pinnedStorageReadyKey, setPinnedStorageReadyKey] = useState(null);
     const [locallyUnreadIds, setLocallyUnreadIds] = useState([]);
+    const [showScrollDown, setShowScrollDown] = useState(false);
     const [showGroupModal, setShowGroupModal] = useState(false);
     const [groupTitle, setGroupTitle] = useState("");
     const [groupMemberIds, setGroupMemberIds] = useState([]);
@@ -277,6 +285,7 @@ export function MessengerPage() {
     const mediaInput = useRef(null);
     const messagesContainer = useRef(null);
     const messagesEnd = useRef(null);
+    const messageRefs = useRef({});
     const typingTimer = useRef(null);
     const typingClearTimer = useRef(null);
     const callTimeoutTimer = useRef(null);
@@ -298,6 +307,7 @@ export function MessengerPage() {
     const closedCallIds = useRef(new Set());
     const callEndMessageSentIds = useRef(new Set());
     const peer = selected?.peer ?? null;
+    const pinnedStorageKey = user?.id ? `chatMessengerPinnedMessages:${user.id}` : null;
     const routeConversationId = decodeChatId(conversationId);
     const incomingRequests = useMemo(() => requests.filter((request) => request.receiver_id === user?.id && request.status === "pending"), [requests, user?.id]);
     const rejectedSentRequests = useMemo(() => requests.filter((request) => request.sender_id === user?.id && request.status === "rejected"), [requests, user?.id]);
@@ -663,9 +673,11 @@ export function MessengerPage() {
             const container = messagesContainer.current;
             if (container) {
                 container.scrollTo({ top: container.scrollHeight, behavior });
+                window.setTimeout(() => setShowScrollDown(false), 240);
                 return;
             }
             messagesEnd.current?.scrollIntoView({ behavior, block: "end" });
+            window.setTimeout(() => setShowScrollDown(false), 240);
         };
         window.requestAnimationFrame(scroll);
         window.setTimeout(scroll, 40);
@@ -674,6 +686,27 @@ export function MessengerPage() {
         scrollMessagesToBottom("auto");
         window.setTimeout(() => scrollMessagesToBottom("auto"), 80);
         window.setTimeout(() => scrollMessagesToBottom("auto"), 220);
+    };
+    const updateScrollDownVisibility = () => {
+        const container = messagesContainer.current;
+        if (!container) {
+            setShowScrollDown(false);
+            return;
+        }
+        const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+        setShowScrollDown(distanceFromBottom > 220);
+    };
+    const scrollToMessage = (messageId) => {
+        const target = messageRefs.current[messageId];
+        if (!target) {
+            setComposerError("Original message is not loaded in this chat yet.");
+            return;
+        }
+        target.scrollIntoView({ behavior: "smooth", block: "center" });
+        setLocallyUnreadIds((current) => current.includes(messageId) ? current : [...current, messageId]);
+        window.setTimeout(() => {
+            setLocallyUnreadIds((current) => current.filter((id) => id !== messageId));
+        }, 1600);
     };
     const currentPathConversationId = () => {
         const match = window.location.pathname.match(/\/app\/chat\/([^/]+)/);
@@ -998,6 +1031,17 @@ export function MessengerPage() {
                     setLastMessages((current) => ({ ...current, [deletedMessage.conversation_id]: deletedMessage }));
                 }
             }
+            if (payload.type === "message:reaction") {
+                setMessages((current) => current.map((message) => message.id === payload.message_id
+                    ? { ...message, reactions: Array.isArray(payload.reactions) ? payload.reactions : [] }
+                    : message));
+                setLastMessages((current) => Object.fromEntries(Object.entries(current).map(([conversationId, message]) => [
+                    conversationId,
+                    message?.id === payload.message_id
+                        ? { ...message, reactions: Array.isArray(payload.reactions) ? payload.reactions : [] }
+                        : message
+                ])));
+            }
             if (payload.type === "friend_request:updated") {
                 loadAll().catch(() => undefined);
                 if (payload.status === "rejected") {
@@ -1283,6 +1327,32 @@ export function MessengerPage() {
         forceScrollMessagesToBottom();
     }, [messages.length, selected?.id]);
     useEffect(() => {
+        setPinnedStorageReadyKey(null);
+        if (!pinnedStorageKey) {
+            setPinnedMessageIds([]);
+            return;
+        }
+        try {
+            const saved = JSON.parse(localStorage.getItem(pinnedStorageKey) || "[]");
+            setPinnedMessageIds(Array.isArray(saved) ? saved.filter((id) => Number.isFinite(Number(id))).map(Number) : []);
+        }
+        catch {
+            setPinnedMessageIds([]);
+        }
+        setPinnedStorageReadyKey(pinnedStorageKey);
+    }, [pinnedStorageKey]);
+    useEffect(() => {
+        if (!pinnedStorageKey || pinnedStorageReadyKey !== pinnedStorageKey)
+            return;
+        localStorage.setItem(pinnedStorageKey, JSON.stringify(pinnedMessageIds));
+    }, [pinnedStorageKey, pinnedStorageReadyKey, pinnedMessageIds]);
+    useEffect(() => {
+        const lastMessage = selected ? lastMessages[selected.id] : null;
+        if (!selected || !lastMessage)
+            return;
+        refreshOpenMessages(selected.id).catch(() => undefined);
+    }, [lastMessages, selected?.id]);
+    useEffect(() => {
         if (!selected || !user)
             return;
         const unreadPeerMessages = messages
@@ -1403,6 +1473,20 @@ export function MessengerPage() {
     };
     const pinMessage = (message) => {
         setPinnedMessageIds((current) => current.includes(message.id) ? current : [...current, message.id]);
+        setMessageMenu(null);
+    };
+    const reactToMessage = async (message, emoji) => {
+        if (!message?.id || message.id < 0)
+            return;
+        const reactions = [
+            ...(message.reactions ?? []).filter((reaction) => reaction.user_id !== user?.id),
+            { user_id: user.id, emoji }
+        ];
+        setMessages((current) => current.map((item) => item.id === message.id ? { ...item, reactions } : item));
+        if (!sendSocketPayload(chatSocket.current, { type: "message:reaction", message_id: message.id, emoji })) {
+            const updated = await chatApi.reactToMessage(message.id, emoji);
+            setMessages((current) => current.map((item) => item.id === message.id ? normalizeMessage(updated) : item));
+        }
         setMessageMenu(null);
     };
     const markMessageUnread = (message) => {
@@ -1582,6 +1666,8 @@ export function MessengerPage() {
                 const stream = await rtc.current?.startLocal(activeCall.call_type === "video", { audioInputId, videoInputId });
                 if (stream)
                     setLocalStream(stream);
+                if (callPeerId)
+                    await rtc.current?.createOffer(callPeerId);
             }
             catch {
                 setCallError("Could not return to camera.");
@@ -1589,6 +1675,10 @@ export function MessengerPage() {
             return;
         }
         try {
+            if (!navigator.mediaDevices?.getDisplayMedia) {
+                setCallError("Screen sharing is not supported by this browser. Use desktop Chrome or Edge for screen share.");
+                return;
+            }
             const stream = await rtc.current?.startScreenShare();
             if (stream) {
                 screenStream.current = stream;
@@ -1650,17 +1740,21 @@ export function MessengerPage() {
             callRecorder.current.stop();
             return;
         }
+        const localTracks = localStream?.getTracks() ?? [];
+        const rtcAudioTracks = rtc.current?.localStream?.getAudioTracks?.() ?? [];
         const tracks = [
             ...(remoteStream?.getTracks() ?? []),
-            ...(localStream?.getTracks() ?? [])
-        ];
+            ...localTracks,
+            ...rtcAudioTracks.filter((track) => !localTracks.includes(track))
+        ].filter((track) => track.readyState !== "ended");
         if (!tracks.length) {
             setCallError("No call media is available to record yet.");
             return;
         }
         try {
             const stream = new MediaStream(tracks);
-            const mimeType = recorderMimeType(activeCall?.call_type === "video" ? "video" : "audio");
+            const hasVideoTrack = tracks.some((track) => track.kind === "video");
+            const mimeType = recorderMimeType(hasVideoTrack ? "video" : "audio");
             const mediaRecorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
             callRecordedChunks.current = [];
             callRecorder.current = mediaRecorder;
@@ -1669,7 +1763,7 @@ export function MessengerPage() {
                     callRecordedChunks.current.push(event.data);
             };
             mediaRecorder.onstop = () => {
-                const mime = mediaRecorder.mimeType || (activeCall?.call_type === "video" ? "video/webm" : "audio/webm");
+                const mime = mediaRecorder.mimeType || (hasVideoTrack ? "video/webm" : "audio/webm");
                 const blob = new Blob(callRecordedChunks.current, { type: mime });
                 callRecordedChunks.current = [];
                 callRecorder.current = null;
@@ -1687,8 +1781,7 @@ export function MessengerPage() {
         }
     };
     const startCallDrag = (event) => {
-        const blockedSelector = callMinimized ? "input, select, textarea, video, audio, a" : "button, input, select, textarea, video, audio, a";
-        if (event.target.closest(blockedSelector))
+        if (event.target.closest("button, input, select, textarea, video, audio, a"))
             return;
         event.currentTarget.setPointerCapture(event.pointerId);
         callDrag.current = {
@@ -1866,6 +1959,8 @@ export function MessengerPage() {
     const hasVideoCall = activeCall?.call_type === "video";
     const hasCameraDevice = videoInputs.length > 0 || (localStream?.getVideoTracks().length ?? 0) > 0;
     const showCameraControls = hasVideoCall && hasCameraDevice;
+    const hasRemoteVideo = (remoteStream?.getVideoTracks().length ?? 0) > 0;
+    const hasLocalVideo = (localStream?.getVideoTracks().length ?? 0) > 0;
     const participantCount = activeCall ? 2 : 0;
     const callPanel = activeCall ? (activeCall.state === "ringing" && activeCall.callee_id === user?.id ? (<div className="overflow-hidden rounded-lg bg-[#4a403d] text-white shadow-2xl shadow-slate-900/35">
       <div className="flex h-10 items-center justify-between px-3 text-xs">
@@ -1974,6 +2069,12 @@ export function MessengerPage() {
           {!callMinimized && (<button onClick={() => setCallFullscreen((value) => !value)} className="grid h-9 w-9 place-items-center rounded-md text-[#464775] hover:bg-[#ededfa]" title={callFullscreen ? "Exit full screen" : "Full screen"}>
             <Maximize2 size={17}/>
           </button>)}
+          {!callMinimized && (<button onClick={() => { setShowCallView((value) => !value); setShowCallPeople(false); setShowCallMore(false); }} className="grid h-9 w-9 place-items-center rounded-md text-[#464775] hover:bg-[#ededfa] md:hidden" title="View">
+            <Grid2X2 size={17}/>
+          </button>)}
+          {!callMinimized && (<button onClick={() => { setShowCallMore((value) => !value); setShowCallPeople(false); setShowCallView(false); }} className="grid h-9 w-9 place-items-center rounded-md text-[#464775] hover:bg-[#ededfa] md:hidden" title="More">
+            <MoreHorizontal size={18}/>
+          </button>)}
           <button onClick={() => { setCallMinimized((value) => !value); setCallFullscreen(false); }} className="grid h-9 w-9 place-items-center rounded-md text-[#464775] hover:bg-[#ededfa]" title={callMinimized ? "Restore call" : "Minimize call"}>
             {callMinimized ? <Maximize2 size={17}/> : <Minimize2 size={17}/>}
           </button>
@@ -2019,7 +2120,8 @@ export function MessengerPage() {
               </div>
             </div>)}
         </div>)}
-      {callMinimized ? (<button onClick={() => setCallMinimized(false)} className="mt-2 flex w-full items-center gap-3 text-left">
+      {callMinimized ? (<div className="mt-2 flex items-center gap-2">
+          <button onClick={() => setCallMinimized(false)} className="flex min-w-0 flex-1 items-center gap-3 text-left">
           <span className="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-full bg-[#c7d5e8] text-lg font-semibold text-[#123a63]">
             {callPeer?.avatar ? <img src={avatarSrc(callPeer.avatar)} alt={callPeer.name} className="h-full w-full object-cover"/> : (callPeer?.name ?? "C").slice(0, 1).toUpperCase()}
           </span>
@@ -2029,8 +2131,12 @@ export function MessengerPage() {
               {activeCall.state === "accepted" ? formatDuration(activeCall.answered_at ?? activeCall.started_at) : activeCall.state}
             </span>
           </span>
-        </button>) : (<div className="relative min-h-0 flex-1 overflow-hidden bg-[#f7f8fb]">
-          {activeCall.state === "accepted" && activeCall.call_type === "video" && remoteStream ? (<video ref={bindRemoteVideo} autoPlay playsInline className="h-full w-full bg-slate-950 object-cover"/>) : (<div className="flex h-full flex-col items-center justify-center bg-gradient-to-br from-[#f8fafc] via-[#eef6ef] to-[#e7f3f6] p-6 text-center">
+        </button>
+          <button onClick={() => setCallState(activeCall.state === "ringing" ? "rejected" : "ended")} className="grid h-10 w-10 shrink-0 place-items-center rounded-md bg-[#c4314b] text-white hover:bg-[#a4263c]" title="End call">
+            <PhoneOff size={17}/>
+          </button>
+        </div>) : (<div className="relative min-h-0 flex-1 overflow-hidden bg-[#f7f8fb]">
+          {activeCall.state === "accepted" && hasRemoteVideo ? (<video ref={bindRemoteVideo} autoPlay playsInline className="h-full w-full bg-slate-950 object-contain"/>) : (<div className="flex h-full flex-col items-center justify-center bg-gradient-to-br from-[#f8fafc] via-[#eef6ef] to-[#e7f3f6] p-6 text-center">
               <div className="grid h-36 w-36 place-items-center overflow-hidden rounded-full bg-[#c7d5e8] text-6xl font-semibold text-[#123a63] shadow-sm sm:h-44 sm:w-44">
                 {callPeer?.avatar ? <img src={avatarSrc(callPeer.avatar)} alt={callPeer.name} className="h-full w-full object-cover"/> : (callPeer?.name ?? "C").slice(0, 1).toUpperCase()}
               </div>
@@ -2043,7 +2149,7 @@ export function MessengerPage() {
             {callPeer?.name ?? "Call"}
           </div>
           <div className="absolute bottom-4 right-4 h-24 w-32 overflow-hidden rounded-lg border border-white/70 bg-[#e8f7f4] shadow-xl sm:h-32 sm:w-44">
-            {activeCall.call_type === "video" && localStream ? (cameraOff ? (<div className="grid h-full place-items-center text-sm font-semibold text-slate-600">Camera off</div>) : (<video ref={bindLocalVideo} muted autoPlay playsInline className="h-full w-full object-cover"/>)) : (<div className="grid h-full place-items-center">
+            {hasLocalVideo ? (cameraOff && !screenSharing ? (<div className="grid h-full place-items-center text-sm font-semibold text-slate-600">Camera off</div>) : (<video ref={bindLocalVideo} muted autoPlay playsInline className="h-full w-full object-cover"/>)) : (<div className="grid h-full place-items-center">
                 <div className="grid h-16 w-16 place-items-center overflow-hidden rounded-full bg-[#c7d5e8] text-xl font-semibold text-[#123a63]">
                   {user?.avatar ? <img src={avatarSrc(user.avatar)} alt={user.name} className="h-full w-full object-cover"/> : (user?.name ?? "Y").slice(0, 1).toUpperCase()}
                 </div>
@@ -2227,7 +2333,7 @@ export function MessengerPage() {
         </div>
       </aside>
 
-      <section className={`${selected || activeView === "people" ? "flex" : "hidden md:flex"} min-h-0 flex-col bg-white`}>
+          <section className={`${selected || activeView === "people" ? "flex" : "hidden md:flex"} relative min-h-0 flex-col bg-white`}>
         {activeView === "people" ? (<div className="flex min-h-0 flex-1 flex-col">
             <div className="border-b border-[#ddddec] bg-white px-5 py-4">
               <h2 className="text-xl font-semibold">People</h2>
@@ -2291,11 +2397,11 @@ export function MessengerPage() {
             {showMobileDevices && (<div className="max-h-[42dvh] overflow-y-auto border-b border-[#ddddec] bg-[#f7f7fc] p-3 xl:hidden">
                 {deviceControls}
               </div>)}
-            <div ref={messagesContainer} className="flex-1 space-y-3 overflow-y-auto bg-[#f5f5fb] p-4">
+            <div ref={messagesContainer} onScroll={updateScrollDownVisibility} className="flex-1 space-y-3 overflow-y-auto bg-[#f5f5fb] p-4">
               {pinnedMessageIds.length > 0 && (<div className="sticky top-0 z-10 rounded-md border border-[#ddddec] bg-white/95 p-2 text-xs shadow-sm backdrop-blur">
                   <p className="font-semibold text-slate-700">Pinned</p>
                   <div className="mt-1 space-y-1">
-                    {displayMessages.filter((message) => pinnedMessageIds.includes(message.id)).slice(-3).map((message) => (<button key={message.id} type="button" onClick={() => setReplyingTo(message)} className="block w-full truncate rounded bg-[#f7f7fc] px-2 py-1 text-left text-slate-600">
+                    {displayMessages.filter((message) => pinnedMessageIds.includes(message.id)).slice(-3).map((message) => (<button key={message.id} type="button" onClick={() => scrollToMessage(message.id)} className="block w-full truncate rounded bg-[#f7f7fc] px-2 py-1 text-left text-slate-600">
                         {messageSummary(message)}
                       </button>))}
                   </div>
@@ -2310,12 +2416,33 @@ export function MessengerPage() {
                     </div>);
                 }
                 const mine = message.sender_id === user?.id;
-                return (<div key={message.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}>
-                    <div onPointerDown={(event) => startMessageSwipe(message, event)} onPointerUp={(event) => endMessageSwipe(message, event)} onContextMenu={(event) => openMessageMenu(message, event)} className={`group relative max-w-[78%] rounded-md px-3.5 py-2 text-sm shadow-sm ${locallyUnreadIds.includes(message.id) ? "ring-2 ring-[#6264a7]/40" : ""} ${mine ? "bg-[#6264a7] text-white" : "bg-white text-slate-900"}`}>
-                      <button type="button" onClick={(event) => openMessageMenu(message, event)} className={`absolute -top-3 ${mine ? "left-2" : "right-2"} grid h-7 w-7 place-items-center rounded-full bg-white text-[#464775] opacity-0 shadow-md transition group-hover:opacity-100`} title="Message actions">
-                        <MoreHorizontal size={17}/>
-                      </button>
-                      {message.reply_to && (<button type="button" onClick={() => setReplyingTo(message.reply_to ? { ...message.reply_to, conversation_id: message.conversation_id, attachment_url: null, attachment_mime: null, attachment_size: null, created_at: message.created_at, read_by: [] } : null)} className={`mb-2 block w-full rounded-md border-l-4 px-2 py-1 text-left text-xs ${mine ? "border-white/70 bg-white/15" : "border-[#6264a7] bg-[#f3f3fb]"}`}>
+                const reactionCounts = Object.entries((message.reactions ?? []).reduce((counts, reaction) => {
+                    counts[reaction.emoji] = (counts[reaction.emoji] ?? 0) + 1;
+                    return counts;
+                }, {}));
+                return (<div key={message.id} ref={(node) => {
+                    if (node)
+                        messageRefs.current[message.id] = node;
+                    else
+                        delete messageRefs.current[message.id];
+                }} className={`flex items-end gap-2 ${mine ? "justify-end" : "justify-start"}`}>
+                    {mine && <span className="mb-2 hidden shrink-0 text-xs text-slate-500 sm:inline">{formatClockTime(message.created_at)}</span>}
+                    <div onPointerDown={(event) => startMessageSwipe(message, event)} onPointerUp={(event) => endMessageSwipe(message, event)} onContextMenu={(event) => openMessageMenu(message, event)} className={`group relative max-w-[78%] rounded-xl px-3.5 py-2 text-sm shadow-sm ${locallyUnreadIds.includes(message.id) ? "ring-2 ring-[#6264a7]/40" : ""} ${mine ? "rounded-br-sm bg-[#7357d7] text-white" : "rounded-bl-sm bg-white text-slate-900"}`}>
+                      <div className={`absolute -top-10 ${mine ? "right-0" : "left-0"} z-20 hidden items-center gap-1 rounded-lg border border-[#e6e6f2] bg-white px-2 py-1 text-lg text-slate-700 shadow-xl group-hover:flex`}>
+                        {QUICK_REACTIONS.map((reaction) => (<button key={reaction} type="button" onClick={() => reactToMessage(message, reaction)} className="grid h-8 w-8 place-items-center rounded-md hover:bg-[#ededfa]" title={`React ${reaction}`}>
+                            {reaction}
+                          </button>))}
+                        <button type="button" onClick={(event) => openMessageMenu(message, event)} className="grid h-8 w-8 place-items-center rounded-md border-l border-[#e6e6f2] pl-1 text-[#464775] hover:bg-[#ededfa]" title="More reactions">
+                          <Laugh size={18}/>
+                        </button>
+                        <button type="button" onClick={() => setReplyingTo(message)} className="grid h-8 w-8 place-items-center rounded-md border-l border-[#e6e6f2] pl-1 text-[#464775] hover:bg-[#ededfa]" title="Reply">
+                          <Edit3 size={17}/>
+                        </button>
+                        <button type="button" onClick={(event) => openMessageMenu(message, event)} className="grid h-8 w-8 place-items-center rounded-md text-[#464775] hover:bg-[#ededfa]" title="Message actions">
+                          <MoreHorizontal size={18}/>
+                        </button>
+                      </div>
+                      {message.reply_to && (<button type="button" onClick={() => scrollToMessage(message.reply_to.id)} className={`mb-2 block w-full rounded-md border-l-4 px-2 py-1 text-left text-xs ${mine ? "border-white/70 bg-white/15" : "border-[#6264a7] bg-[#f3f3fb]"}`}>
                           <span className="block font-semibold">Reply</span>
                           <span className="block truncate">{messageSummary(message.reply_to)}</span>
                         </button>)}
@@ -2338,11 +2465,21 @@ export function MessengerPage() {
                           {mine && !message.deleted_for_everyone && <button type="button" onClick={() => deleteMessage(message, "everyone")} className="underline">Delete all</button>}
                         </span>
                       </div>
+                      {reactionCounts.length > 0 && (<div className={`absolute -bottom-4 ${mine ? "right-3" : "left-3"} flex rounded-full border border-[#e6e6f2] bg-white px-1.5 py-0.5 text-xs text-slate-700 shadow-sm`}>
+                          {reactionCounts.map(([emoji, count]) => (<button key={emoji} type="button" onClick={() => reactToMessage(message, emoji)} className="flex items-center gap-0.5 rounded-full px-1 hover:bg-[#ededfa]">
+                              <span>{emoji}</span>
+                              {count > 1 && <span>{count}</span>}
+                            </button>))}
+                        </div>)}
                     </div>
+                    {!mine && <span className="mb-2 hidden shrink-0 text-xs text-slate-500 sm:inline">{formatClockTime(message.created_at)}</span>}
                   </div>);
             })}
               <div ref={messagesEnd}/>
             </div>
+            {showScrollDown && (<button type="button" onClick={forceScrollMessagesToBottom} className="absolute bottom-24 right-5 z-20 grid h-11 w-11 place-items-center rounded-full bg-[#6264a7] text-white shadow-lg transition hover:bg-[#5456a0]" title="Go to latest message">
+                <ChevronDown size={20}/>
+              </button>)}
             <form onSubmit={sendMessage} className="relative border-t border-[#ddddec] bg-white p-3 sm:p-4">
               {showEmojiPanel && (<div className="absolute bottom-[68px] left-2 right-2 z-30 mx-auto flex h-[min(72dvh,540px)] max-w-[420px] flex-col overflow-hidden rounded-lg border border-[#d1d1e0] bg-white shadow-2xl sm:left-auto sm:right-3 sm:mx-0 sm:w-[390px]" onMouseDown={(event) => event.stopPropagation()}>
                   <div className="grid shrink-0 grid-cols-4 border-b border-[#e6e6f2] text-sm">

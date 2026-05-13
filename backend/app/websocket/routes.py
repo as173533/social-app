@@ -61,7 +61,7 @@ async def chat_socket(websocket: WebSocket):
                                 "message_type": reply.message_type,
                                 "attachment_name": None if reply.deleted_for_everyone_at else reply.attachment_name,
                             }
-                event = {"type": "message", "message": {**jsonable_model(message), "read_by": [], "deleted_for_everyone": False, "reply_to": reply_to}}
+                event = {"type": "message", "message": {**jsonable_model(message), "read_by": [], "reactions": [], "deleted_for_everyone": False, "reply_to": reply_to}}
                 if payload.get("client_message_id"):
                     event["message"]["client_message_id"] = str(payload["client_message_id"])
                 for recipient_id in recipient_ids:
@@ -78,10 +78,31 @@ async def chat_socket(websocket: WebSocket):
                 if scope == "me":
                     await chat_manager.send_to_user(user_id, {"type": "message:deleted", "message_id": message_id, "scope": "me"})
                 else:
-                    event = {"type": "message:deleted", "message_id": message_id, "scope": "everyone", "message": {**jsonable_model(message), "read_by": [], "deleted_for_everyone": True, "reply_to": None}}
+                    event = {"type": "message:deleted", "message_id": message_id, "scope": "everyone", "message": {**jsonable_model(message), "read_by": [], "reactions": [], "deleted_for_everyone": True, "reply_to": None}}
                     for recipient_id in recipient_ids:
                         if recipient_id:
                             await chat_manager.send_to_user(recipient_id, event)
+            elif event_type == "message:reaction":
+                message_id = int(payload["message_id"])
+                emoji = str(payload.get("emoji", "")).strip()
+                async with AsyncSessionLocal() as session:
+                    service = ChatService(session)
+                    message = await service.react_to_message(user_id, message_id, emoji)
+                    conversation = await service.chat.get_conversation_for_user(message.conversation_id, user_id)
+                    recipient_ids = await service.member_ids(message.conversation_id) if conversation.conversation_type == "group" else [conversation.user1_id, conversation.user2_id]
+                    reactions = await service.chat.reactions_for_messages([message.id])
+                event = {
+                    "type": "message:reaction",
+                    "message_id": message.id,
+                    "conversation_id": message.conversation_id,
+                    "reactions": [
+                        {"user_id": reaction.user_id, "emoji": reaction.emoji}
+                        for reaction in reactions.get(message.id, [])
+                    ],
+                }
+                for recipient_id in recipient_ids:
+                    if recipient_id:
+                        await chat_manager.send_to_user(recipient_id, event)
             elif event_type == "typing":
                 conversation_id = int(payload["conversation_id"])
                 is_typing = bool(payload.get("is_typing", True))

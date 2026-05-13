@@ -5,7 +5,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.conversation import Conversation, ConversationMember
-from app.models.message import Message, MessageDeletion, MessageRead
+from app.models.message import Message, MessageDeletion, MessageReaction, MessageRead
 
 
 class ChatRepository:
@@ -176,3 +176,25 @@ class ChatRepository:
         for read in result.scalars().all():
             reads.setdefault(read.message_id, []).append(read.user_id)
         return reads
+
+    async def set_reaction(self, message_id: int, user_id: int, emoji: str) -> None:
+        stmt = (
+            insert(MessageReaction)
+            .values(message_id=message_id, user_id=user_id, emoji=emoji)
+            .on_conflict_do_update(
+                index_elements=["message_id", "user_id"],
+                set_={"emoji": emoji},
+            )
+        )
+        await self.session.execute(stmt)
+
+    async def reactions_for_messages(self, message_ids: list[int]) -> dict[int, list[MessageReaction]]:
+        if not message_ids:
+            return {}
+        result = await self.session.execute(
+            select(MessageReaction).where(MessageReaction.message_id.in_(message_ids)).order_by(MessageReaction.created_at.asc())
+        )
+        reactions: dict[int, list[MessageReaction]] = {}
+        for reaction in result.scalars().all():
+            reactions.setdefault(reaction.message_id, []).append(reaction)
+        return reactions

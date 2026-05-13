@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_current_user
 from app.db.session import get_session
 from app.models.user import User
-from app.schemas.chat import AttachmentOut, ConversationOut, GroupCreate, MarkReadRequest, MessageCreate, MessageDeleteRequest, MessageOut, MessageReplyOut
+from app.schemas.chat import AttachmentOut, ConversationOut, GroupCreate, MarkReadRequest, MessageCreate, MessageDeleteRequest, MessageOut, MessageReactionOut, MessageReactionRequest, MessageReplyOut
 from app.schemas.user import UserPublic
 from app.services.chat import ChatService
 from app.services.users import UserService
@@ -44,6 +44,7 @@ async def message_out(message, service: ChatService, current_user_id: int) -> Me
                 attachment_name=None if reply_deleted else reply_message.attachment_name,
             )
     reads = await service.chat.read_user_ids_for_messages([message.id])
+    reactions = await service.chat.reactions_for_messages([message.id])
     return MessageOut.model_validate(message).model_copy(
         update={
             "body": "" if deleted else message.body,
@@ -54,6 +55,7 @@ async def message_out(message, service: ChatService, current_user_id: int) -> Me
             "deleted_for_everyone": deleted,
             "reply_to": reply_to,
             "read_by": reads.get(message.id, []),
+            "reactions": [MessageReactionOut.model_validate(reaction) for reaction in reactions.get(message.id, [])],
         }
     )
 
@@ -133,6 +135,18 @@ async def delete_message(
 ):
     service = ChatService(session)
     message = await service.delete_message(current_user.id, message_id, payload.scope)
+    return await message_out(message, service, current_user.id)
+
+
+@router.post("/messages/{message_id}/reactions", response_model=MessageOut)
+async def react_to_message(
+    message_id: int,
+    payload: MessageReactionRequest,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    service = ChatService(session)
+    message = await service.react_to_message(current_user.id, message_id, payload.emoji)
     return await message_out(message, service, current_user.id)
 
 
