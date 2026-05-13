@@ -28,6 +28,12 @@ class FriendRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_directed_request(self, sender_id: int, receiver_id: int) -> FriendRequest | None:
+        result = await self.session.execute(
+            select(FriendRequest).where(FriendRequest.sender_id == sender_id, FriendRequest.receiver_id == receiver_id)
+        )
+        return result.scalar_one_or_none()
+
     async def create_request(self, sender_id: int, receiver_id: int) -> FriendRequest:
         request = FriendRequest(sender_id=sender_id, receiver_id=receiver_id)
         self.session.add(request)
@@ -43,6 +49,12 @@ class FriendRepository:
     async def set_request_status(self, request: FriendRequest, status: str) -> FriendRequest:
         request.status = status
         request.responded_at = datetime.now(timezone.utc)
+        await self.session.flush()
+        return request
+
+    async def reopen_request(self, request: FriendRequest) -> FriendRequest:
+        request.status = "pending"
+        request.responded_at = None
         await self.session.flush()
         return request
 

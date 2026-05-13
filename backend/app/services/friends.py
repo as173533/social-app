@@ -14,11 +14,20 @@ class FriendService:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot add yourself")
         if await self.friends.are_friends(sender_id, receiver_id):
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Already friends")
-        existing = await self.friends.get_request_between(sender_id, receiver_id)
-        if existing and existing.status == "pending":
+        existing_sent = await self.friends.get_directed_request(sender_id, receiver_id)
+        if existing_sent and existing_sent.status == "pending":
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Friend request already pending")
+        if existing_sent and existing_sent.status in {"accepted", "rejected"}:
+            request = await self.friends.reopen_request(existing_sent)
+            await self.session.commit()
+            await self.session.refresh(request)
+            return request
+        existing_received = await self.friends.get_directed_request(receiver_id, sender_id)
+        if existing_received and existing_received.status == "pending":
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This user already sent you a friend request")
         request = await self.friends.create_request(sender_id, receiver_id)
         await self.session.commit()
+        await self.session.refresh(request)
         return request
 
     async def respond(self, request_id: int, receiver_id: int, accepted: bool):

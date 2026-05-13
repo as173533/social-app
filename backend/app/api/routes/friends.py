@@ -8,6 +8,7 @@ from app.schemas.friend import FriendOut, FriendRequestCreate, FriendRequestOut
 from app.schemas.user import UserPublic
 from app.services.friends import FriendService
 from app.services.users import UserService
+from app.websocket.manager import chat_manager
 
 router = APIRouter()
 
@@ -19,7 +20,9 @@ async def send_request(
     session: AsyncSession = Depends(get_session),
 ):
     await UserService(session).get(payload.receiver_id)
-    return await FriendService(session).send_request(current_user.id, payload.receiver_id)
+    request = await FriendService(session).send_request(current_user.id, payload.receiver_id)
+    await chat_manager.send_to_user(payload.receiver_id, {"type": "friend_request:updated", "request_id": request.id, "status": request.status})
+    return request
 
 
 @router.get("/requests", response_model=list[FriendRequestOut])
@@ -47,7 +50,9 @@ async def accept_request(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    return await FriendService(session).respond(request_id, current_user.id, accepted=True)
+    request = await FriendService(session).respond(request_id, current_user.id, accepted=True)
+    await chat_manager.send_to_user(request.sender_id, {"type": "friend_request:updated", "request_id": request.id, "status": request.status})
+    return request
 
 
 @router.post("/requests/{request_id}/reject", response_model=FriendRequestOut)
@@ -56,7 +61,9 @@ async def reject_request(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    return await FriendService(session).respond(request_id, current_user.id, accepted=False)
+    request = await FriendService(session).respond(request_id, current_user.id, accepted=False)
+    await chat_manager.send_to_user(request.sender_id, {"type": "friend_request:updated", "request_id": request.id, "status": request.status})
+    return request
 
 
 @router.get("", response_model=list[FriendOut])
