@@ -161,6 +161,12 @@ class ChatRepository:
         await self.session.flush()
         return message
 
+    async def update_message_body(self, message: Message, body: str, message_type: str) -> Message:
+        message.body = body
+        message.message_type = message_type
+        await self.session.flush()
+        return message
+
     async def mark_read(self, message_ids: list[int], user_id: int) -> None:
         for message_id in message_ids:
             stmt = insert(MessageRead).values(message_id=message_id, user_id=user_id).on_conflict_do_nothing(

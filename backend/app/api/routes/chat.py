@@ -1,13 +1,13 @@
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
 from app.db.session import get_session
 from app.models.user import User
-from app.schemas.chat import AttachmentOut, ConversationOut, GroupCreate, MarkReadRequest, MessageCreate, MessageDeleteRequest, MessageOut, MessageReactionOut, MessageReactionRequest, MessageReplyOut
+from app.schemas.chat import AttachmentOut, ConversationOut, GroupCreate, MarkReadRequest, MessageCreate, MessageDeleteRequest, MessageEditRequest, MessageOut, MessageReactionOut, MessageReactionRequest, MessageReplyOut
 from app.schemas.user import UserPublic
 from app.services.chat import ChatService
 from app.services.users import UserService
@@ -106,11 +106,13 @@ async def list_conversations(current_user: User = Depends(get_current_user), ses
 @router.get("/conversations/{conversation_id}/messages", response_model=list[MessageOut])
 async def list_messages(
     conversation_id: int,
+    before_id: int | None = Query(default=None, ge=1),
+    limit: int = Query(default=50, ge=1, le=100),
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     service = ChatService(session)
-    messages = await service.list_messages(current_user.id, conversation_id)
+    messages = await service.list_messages_page(current_user.id, conversation_id, limit=limit, before_id=before_id)
     return [await message_out(message, service, current_user.id) for message in messages]
 
 
@@ -135,6 +137,18 @@ async def delete_message(
 ):
     service = ChatService(session)
     message = await service.delete_message(current_user.id, message_id, payload.scope)
+    return await message_out(message, service, current_user.id)
+
+
+@router.patch("/messages/{message_id}", response_model=MessageOut)
+async def edit_message(
+    message_id: int,
+    payload: MessageEditRequest,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    service = ChatService(session)
+    message = await service.edit_message(current_user.id, message_id, payload)
     return await message_out(message, service, current_user.id)
 
 

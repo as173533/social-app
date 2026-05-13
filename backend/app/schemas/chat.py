@@ -81,6 +81,11 @@ class MessageDeleteRequest(BaseModel):
     scope: str = Field(pattern="^(me|everyone)$")
 
 
+class MessageEditRequest(BaseModel):
+    body: str = Field(min_length=1, max_length=200000)
+    message_type: str = Field(default="text", max_length=20)
+
+
 class MessageReactionRequest(BaseModel):
     emoji: str = Field(min_length=1, max_length=16)
 

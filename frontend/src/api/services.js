@@ -30,8 +30,9 @@ export const chatApi = {
     conversations: () => api.get("/chat/conversations").then((r) => r.data),
     createConversation: (peerId) => api.post(`/chat/conversations/${peerId}`).then((r) => r.data),
     createGroup: (data) => api.post("/chat/groups", data).then((r) => r.data),
-    messages: (conversationId) => api.get(`/chat/conversations/${conversationId}/messages`).then((r) => r.data),
+    messages: (conversationId, params = {}) => api.get(`/chat/conversations/${conversationId}/messages`, { params }).then((r) => r.data),
     send: (conversationId, data) => api.post(`/chat/conversations/${conversationId}/messages`, data).then((r) => r.data),
+    editMessage: (messageId, data) => api.patch(`/chat/messages/${messageId}`, data).then((r) => r.data),
     deleteMessage: (messageId, scope) => api.delete(`/chat/messages/${messageId}`, { data: { scope } }).then((r) => r.data),
     reactToMessage: (messageId, emoji) => api.post(`/chat/messages/${messageId}/reactions`, { emoji }).then((r) => r.data),
     uploadAttachment: (conversationId, file, filename) => {

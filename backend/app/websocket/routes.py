@@ -7,7 +7,7 @@ from app.repositories.friends import FriendRepository
 from app.repositories.users import UserRepository
 from app.services.calls import CallService
 from app.services.chat import ChatService
-from app.schemas.chat import MessageCreate
+from app.schemas.chat import MessageCreate, MessageEditRequest
 from app.utils.serialization import jsonable_model
 from app.websocket.auth import authenticate_websocket
 from app.websocket.manager import call_manager, chat_manager
@@ -82,6 +82,46 @@ async def chat_socket(websocket: WebSocket):
                     for recipient_id in recipient_ids:
                         if recipient_id:
                             await chat_manager.send_to_user(recipient_id, event)
+            elif event_type == "message:edit":
+                message_id = int(payload["message_id"])
+                async with AsyncSessionLocal() as session:
+                    service = ChatService(session)
+                    message = await service.edit_message(
+                        user_id,
+                        message_id,
+                        MessageEditRequest(body=str(payload.get("body", "")), message_type=str(payload.get("message_type", "text"))),
+                    )
+                    conversation = await service.chat.get_conversation_for_user(message.conversation_id, user_id)
+                    recipient_ids = await service.member_ids(message.conversation_id) if conversation.conversation_type == "group" else [conversation.user1_id, conversation.user2_id]
+                    reads = await service.chat.read_user_ids_for_messages([message.id])
+                    reactions = await service.chat.reactions_for_messages([message.id])
+                    reply_to = None
+                    if message.reply_to_message_id:
+                        reply = await service.chat.get_message_for_user(message.reply_to_message_id, user_id)
+                        if reply:
+                            reply_to = {
+                                "id": reply.id,
+                                "sender_id": reply.sender_id,
+                                "body": "" if reply.deleted_for_everyone_at else reply.body,
+                                "message_type": reply.message_type,
+                                "attachment_name": None if reply.deleted_for_everyone_at else reply.attachment_name,
+                            }
+                event = {
+                    "type": "message:edited",
+                    "message": {
+                        **jsonable_model(message),
+                        "read_by": reads.get(message.id, []),
+                        "reactions": [
+                            {"user_id": reaction.user_id, "emoji": reaction.emoji}
+                            for reaction in reactions.get(message.id, [])
+                        ],
+                        "deleted_for_everyone": False,
+                        "reply_to": reply_to,
+                    },
+                }
+                for recipient_id in recipient_ids:
+                    if recipient_id:
+                        await chat_manager.send_to_user(recipient_id, event)
             elif event_type == "message:reaction":
                 message_id = int(payload["message_id"])
                 emoji = str(payload.get("emoji", "")).strip()

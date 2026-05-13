@@ -181,6 +181,18 @@ function callEventText(message) {
     }
     return `${label} ended at ${formatCallEventTime(message.created_at)} - Duration ${formatCallDuration(duration)}`;
 }
+function messageDateLabel(value) {
+    const date = new Date(value);
+    const today = new Date();
+    const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const startOfMessageDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    const dayDelta = Math.round((startOfToday - startOfMessageDay) / 86400000);
+    if (dayDelta === 0)
+        return "Today";
+    if (dayDelta === 1)
+        return "Yesterday";
+    return new Intl.DateTimeFormat(undefined, { day: "2-digit", month: "short", year: "numeric" }).format(date);
+}
 function messagePreview(message, currentUserId) {
     if (!message)
         return "No messages yet";
@@ -221,14 +233,18 @@ export function MessengerPage() {
     const [lastMessages, setLastMessages] = useState({});
     const [messages, setMessages] = useState([]);
     const [decryptedMessages, setDecryptedMessages] = useState({});
+    const [decryptedReplyMessages, setDecryptedReplyMessages] = useState({});
     const [decryptedLastMessages, setDecryptedLastMessages] = useState({});
     const [unreadCounts, setUnreadCounts] = useState({});
     const [mentionRecords, setMentionRecords] = useState([]);
     const [callHistory, setCallHistory] = useState([]);
     const [selected, setSelected] = useState(null);
     const [replyingTo, setReplyingTo] = useState(null);
+    const [editingMessage, setEditingMessage] = useState(null);
     const [messageMenu, setMessageMenu] = useState(null);
     const [reactionMenu, setReactionMenu] = useState(null);
+    const [loadingOlderMessages, setLoadingOlderMessages] = useState(false);
+    const [hasOlderMessages, setHasOlderMessages] = useState(true);
     const [pinnedMessageIds, setPinnedMessageIds] = useState([]);
     const [pinnedStorageReadyKey, setPinnedStorageReadyKey] = useState(null);
     const [locallyUnreadIds, setLocallyUnreadIds] = useState([]);
@@ -468,7 +484,16 @@ export function MessengerPage() {
         { label: "Good morning", value: "☀️ Good morning", icon: "☀️", keywords: "hello day" },
         { label: "Good night", value: "🌙 Good night", icon: "🌙", keywords: "sleep bye" }
     ];
-    const displayMessages = useMemo(() => messages.map((message) => decryptedMessages[message.id] ?? message), [decryptedMessages, messages]);
+    const displayMessages = useMemo(() => {
+        const baseMessages = messages.map((message) => decryptedMessages[message.id] ?? message);
+        const byId = new Map(baseMessages.map((message) => [message.id, message]));
+        return baseMessages.map((message) => {
+            if (!message.reply_to)
+                return message;
+            const decryptedReply = byId.get(message.reply_to.id) ?? decryptedMessages[message.reply_to.id] ?? decryptedReplyMessages[message.reply_to.id];
+            return decryptedReply ? { ...message, reply_to: { ...message.reply_to, ...decryptedReply } } : message;
+        });
+    }, [decryptedMessages, decryptedReplyMessages, messages]);
     const displayLastMessages = useMemo(() => Object.fromEntries(Object.entries(lastMessages).map(([conversationId, message]) => [
         conversationId,
         message ? decryptedLastMessages[message.id] ?? message : message
@@ -714,6 +739,9 @@ export function MessengerPage() {
             setShowScrollDown(false);
             return;
         }
+        if (container.scrollTop < 80 && hasOlderMessages && !loadingOlderMessages && selectedRef.current) {
+            loadOlderMessages().catch(() => undefined);
+        }
         const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
         setShowScrollDown(distanceFromBottom > 220);
     };
@@ -750,6 +778,33 @@ export function MessengerPage() {
         if (!items)
             return;
         setMessages((current) => mergeMessageLists(current, items.map(normalizeMessage), conversationId));
+    };
+    const loadOlderMessages = async () => {
+        const conversation = selectedRef.current;
+        if (!conversation || loadingOlderMessages || !hasOlderMessages)
+            return;
+        const container = messagesContainer.current;
+        const previousScrollHeight = container?.scrollHeight ?? 0;
+        const beforeId = Math.min(...messages.filter((message) => message.id > 0).map((message) => message.id));
+        if (!Number.isFinite(beforeId))
+            return;
+        setLoadingOlderMessages(true);
+        try {
+            const items = await chatApi.messages(conversation.id, { before_id: beforeId, limit: 50 });
+            if (items.length < 50)
+                setHasOlderMessages(false);
+            if (items.length) {
+                setMessages((current) => mergeMessageLists(current, items.map(normalizeMessage), conversation.id));
+                window.requestAnimationFrame(() => {
+                    const nextContainer = messagesContainer.current;
+                    if (nextContainer)
+                        nextContainer.scrollTop = nextContainer.scrollHeight - previousScrollHeight + nextContainer.scrollTop;
+                });
+            }
+        }
+        finally {
+            setLoadingOlderMessages(false);
+        }
     };
     const mediaErrorMessage = (error, callType) => {
         if (error instanceof DOMException) {
@@ -848,6 +903,52 @@ export function MessengerPage() {
             reply_to_message_id: replyToMessageId
         });
         return sent;
+    };
+    const editChatMessage = async () => {
+        if (!selected || !editingMessage || !body.trim())
+            return false;
+        const visibleBody = body.trim();
+        let encryptedPayload;
+        try {
+            encryptedPayload = await encryptOutgoingMessage(selected, user, { body: visibleBody, message_type: "text" });
+        }
+        catch {
+            setComposerError("Could not encrypt this edit. Ask your friend to sign in once, then try again.");
+            return false;
+        }
+        const optimisticMessage = {
+            ...editingMessage,
+            body: visibleBody,
+            message_type: "text",
+            e2ee_decrypted: true
+        };
+        setMessages((current) => current.map((message) => message.id === editingMessage.id ? optimisticMessage : message));
+        setDecryptedMessages((current) => ({ ...current, [editingMessage.id]: optimisticMessage }));
+        setLastMessages((current) => Object.fromEntries(Object.entries(current).map(([conversationId, message]) => [
+            conversationId,
+            message?.id === editingMessage.id ? optimisticMessage : message
+        ])));
+        setEditingMessage(null);
+        setBody("");
+        const payload = {
+            type: "message:edit",
+            message_id: editingMessage.id,
+            body: encryptedPayload.body,
+            message_type: encryptedPayload.message_type ?? "text"
+        };
+        if (!sendSocketPayload(chatSocket.current, payload)) {
+            const updated = await chatApi.editMessage(editingMessage.id, {
+                body: encryptedPayload.body,
+                message_type: encryptedPayload.message_type ?? "text"
+            });
+            setMessages((current) => current.map((message) => message.id === editingMessage.id ? normalizeMessage(updated) : message));
+            setDecryptedMessages((current) => {
+                const next = { ...current };
+                delete next[editingMessage.id];
+                return next;
+            });
+        }
+        return true;
     };
     const absoluteMediaUrl = (value) => {
         if (!value)
@@ -974,11 +1075,12 @@ export function MessengerPage() {
             setMessageMenu(null);
             setReactionMenu(null);
         };
+        const closeActionMenuOnScroll = () => setMessageMenu(null);
         window.addEventListener("pointerdown", closeMenu);
-        window.addEventListener("scroll", closeMenu, true);
+        window.addEventListener("scroll", closeActionMenuOnScroll, true);
         return () => {
             window.removeEventListener("pointerdown", closeMenu);
-            window.removeEventListener("scroll", closeMenu, true);
+            window.removeEventListener("scroll", closeActionMenuOnScroll, true);
         };
     }, [messageMenu, reactionMenu]);
     useEffect(() => {
@@ -1059,6 +1161,21 @@ export function MessengerPage() {
                     setMessages((current) => current.map((message) => (message.id === payload.message_id ? deletedMessage : message)));
                     setLastMessages((current) => ({ ...current, [deletedMessage.conversation_id]: deletedMessage }));
                 }
+            }
+            if (payload.type === "message:edited" && payload.message) {
+                const editedMessage = normalizeMessage(payload.message);
+                setMessages((current) => current.map((message) => message.id === editedMessage.id ? editedMessage : message));
+                setDecryptedMessages((current) => {
+                    const next = { ...current };
+                    delete next[editedMessage.id];
+                    return next;
+                });
+                setDecryptedReplyMessages((current) => {
+                    const next = { ...current };
+                    delete next[editedMessage.id];
+                    return next;
+                });
+                setLastMessages((current) => ({ ...current, [editedMessage.conversation_id]: editedMessage }));
             }
             if (payload.type === "message:reaction") {
                 setMessages((current) => current.map((message) => message.id === payload.message_id
@@ -1250,10 +1367,16 @@ export function MessengerPage() {
         if (selected) {
             selectedRef.current = selected;
             selectedConversationIdRef.current = selected.id;
+            previousMessageScroll.current = { selectedId: selected.id, length: 0 };
+            setMessages([]);
             setDecryptedMessages({});
+            setDecryptedReplyMessages({});
+            setEditingMessage(null);
+            setHasOlderMessages(true);
             setTypingUserId(null);
             chatApi.messages(selected.id).then((items) => {
                 setMessages((current) => mergeMessageLists(current, items.map(normalizeMessage), selected.id));
+                setHasOlderMessages(items.length >= 50);
             });
         }
         else {
@@ -1261,6 +1384,9 @@ export function MessengerPage() {
             selectedConversationIdRef.current = null;
             setMessages([]);
             setDecryptedMessages({});
+            setDecryptedReplyMessages({});
+            setEditingMessage(null);
+            setHasOlderMessages(true);
         }
     }, [selected]);
     useEffect(() => {
@@ -1282,6 +1408,27 @@ export function MessengerPage() {
             cancelled = true;
         };
     }, [decryptedMessages, messages, user]);
+    useEffect(() => {
+        if (!user || !messages.length)
+            return;
+        let cancelled = false;
+        const encryptedReplies = messages
+            .map((message) => message.reply_to)
+            .filter((reply) => reply && isEncryptedBody(reply.body) && !decryptedReplyMessages[reply.id]);
+        if (!encryptedReplies.length)
+            return;
+        Promise.all(encryptedReplies.map((reply) => decryptIncomingMessage(reply, user))).then((items) => {
+            if (cancelled)
+                return;
+            const entries = items.filter(Boolean).map((message) => [message.id, normalizeMessage(message)]);
+            if (entries.length) {
+                setDecryptedReplyMessages((current) => ({ ...current, ...Object.fromEntries(entries) }));
+            }
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, [decryptedReplyMessages, messages, user]);
     useEffect(() => {
         if (!user)
             return;
@@ -1469,6 +1616,10 @@ export function MessengerPage() {
         event.preventDefault();
         if (!selected || !body.trim())
             return;
+        if (editingMessage) {
+            await editChatMessage();
+            return;
+        }
         sendChatMessage({ body: body.trim(), message_type: "text" });
         setBody("");
         setReplyingTo(null);
@@ -1501,6 +1652,7 @@ export function MessengerPage() {
         if (!swipe || swipe.id !== message.id)
             return;
         if (Math.abs(event.clientX - swipe.x) > 70) {
+            setEditingMessage(null);
             setReplyingTo(message);
         }
     };
@@ -1531,8 +1683,11 @@ export function MessengerPage() {
     const editMessageDraft = (message) => {
         if (message.sender_id !== user?.id || message.deleted_for_everyone)
             return;
+        if (message.attachment_url)
+            return;
         setBody(message.body || "");
         setReplyingTo(null);
+        setEditingMessage(message);
         setMessageMenu(null);
     };
     const reactToMessage = async (message, emoji) => {
@@ -2465,21 +2620,33 @@ export function MessengerPage() {
                 {deviceControls}
               </div>)}
             <div ref={messagesContainer} onScroll={updateScrollDownVisibility} className="flex-1 space-y-3 overflow-y-auto bg-[#f5f5fb] p-4">
+              {loadingOlderMessages && <div className="text-center text-xs text-slate-500">Loading older messages...</div>}
+              {!hasOlderMessages && displayMessages.length > 0 && <div className="text-center text-xs text-slate-400">No older messages</div>}
               {pinnedMessageIds.length > 0 && (<div className="sticky top-0 z-10 rounded-md border border-[#ddddec] bg-white/95 p-2 text-xs shadow-sm backdrop-blur">
                   <p className="font-semibold text-slate-700">Pinned</p>
                   <div className="mt-1 space-y-1">
-                    {displayMessages.filter((message) => pinnedMessageIds.includes(message.id)).slice(-3).map((message) => (<button key={message.id} type="button" onClick={() => scrollToMessage(message.id)} className="block w-full truncate rounded bg-[#f7f7fc] px-2 py-1 text-left text-slate-600">
-                        {messageSummary(message)}
-                      </button>))}
+                    {displayMessages.filter((message) => pinnedMessageIds.includes(message.id)).slice(-3).map((message) => (<div key={message.id} className="flex items-center gap-1 rounded bg-[#f7f7fc]">
+                        <button type="button" onClick={() => scrollToMessage(message.id)} className="min-w-0 flex-1 truncate px-2 py-1 text-left text-slate-600">
+                          {messageSummary(message)}
+                        </button>
+                        <button type="button" onClick={() => pinMessage(message)} className="grid h-7 w-7 shrink-0 place-items-center rounded text-slate-500 hover:bg-white" title="Unpin">
+                          <X size={14}/>
+                        </button>
+                      </div>))}
                   </div>
                 </div>)}
-              {displayMessages.map((rawMessage) => {
+              {displayMessages.map((rawMessage, index) => {
                 const message = normalizeMessage(rawMessage);
+                const previousMessage = index > 0 ? normalizeMessage(displayMessages[index - 1]) : null;
+                const showDateSeparator = !previousMessage || messageDateLabel(previousMessage.created_at) !== messageDateLabel(message.created_at);
                 if (isCallEvent(message)) {
-                    return (<div key={message.id} className="flex justify-center">
+                    return (<div key={message.id}>
+                      {showDateSeparator && <div className="my-3 flex justify-center"><span className="rounded-full bg-white px-3 py-1 text-xs font-medium text-slate-500 shadow-sm">{messageDateLabel(message.created_at)}</span></div>}
+                      <div className="flex justify-center">
                       <span className="rounded-md bg-white px-3 py-1.5 text-xs font-medium text-slate-600 shadow-sm">
                         {callEventText(message)}
                       </span>
+                      </div>
                     </div>);
                 }
                 const mine = message.sender_id === user?.id;
@@ -2487,7 +2654,9 @@ export function MessengerPage() {
                     counts[reaction.emoji] = (counts[reaction.emoji] ?? 0) + 1;
                     return counts;
                 }, {}));
-                return (<div key={message.id} ref={(node) => {
+                return (<div key={message.id}>
+                  {showDateSeparator && <div className="my-3 flex justify-center"><span className="rounded-full bg-white px-3 py-1 text-xs font-medium text-slate-500 shadow-sm">{messageDateLabel(message.created_at)}</span></div>}
+                  <div ref={(node) => {
                     if (node)
                         messageRefs.current[message.id] = node;
                     else
@@ -2535,7 +2704,8 @@ export function MessengerPage() {
                         </div>)}
                     </div>
                     {!mine && <span className="mb-2 hidden shrink-0 text-xs text-slate-500 sm:inline">{formatClockTime(message.created_at)}</span>}
-                  </div>);
+                  </div>
+                </div>);
             })}
               <div ref={messagesEnd}/>
             </div>
@@ -2609,6 +2779,15 @@ export function MessengerPage() {
                   </div>
                 </div>)}
               {composerError && <p className="mb-2 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{composerError}</p>}
+              {editingMessage && (<div className="mb-2 flex items-center justify-between rounded-md border-l-4 border-[#6264a7] bg-[#f3f3fb] px-3 py-2 text-sm">
+                  <span className="min-w-0">
+                    <span className="block font-semibold text-slate-700">Editing message</span>
+                    <span className="block truncate text-slate-500">{messageSummary(editingMessage)}</span>
+                  </span>
+                  <button type="button" onClick={() => { setEditingMessage(null); setBody(""); }} className="grid h-8 w-8 place-items-center rounded-md text-slate-500 hover:bg-white">
+                    <X size={16}/>
+                  </button>
+                </div>)}
               {replyingTo && (<div className="mb-2 flex items-center justify-between rounded-md border-l-4 border-[#6264a7] bg-[#f3f3fb] px-3 py-2 text-sm">
                   <span className="min-w-0">
                     <span className="block font-semibold text-slate-700">Replying to message</span>
@@ -2629,7 +2808,7 @@ export function MessengerPage() {
                 typingTimer.current = window.setTimeout(() => {
                     sendSocketPayload(chatSocket.current, { type: "typing", conversation_id: selected.id, is_typing: false });
                 }, 900);
-            }} className="min-w-0 flex-1 rounded-md bg-transparent px-3 py-3 outline-none sm:px-4" placeholder={uploading ? "Uploading..." : recordingKind ? "Recording..." : "Type a new message"} disabled={uploading}/>
+            }} className="min-w-0 flex-1 rounded-md bg-transparent px-3 py-3 outline-none sm:px-4" placeholder={uploading ? "Uploading..." : recordingKind ? "Recording..." : editingMessage ? "Edit message" : "Type a new message"} disabled={uploading}/>
                 <div className="flex shrink-0 items-center gap-0.5 pr-1 text-[#464775] sm:gap-1 sm:pr-2">
                   <button type="button" onClick={() => setShowEmojiPanel((value) => !value)} className="grid h-9 w-8 place-items-center rounded-md hover:bg-[#ededfa] sm:w-9" title="Emoji, GIF, sticker">
                     <Laugh size={18}/>
@@ -2751,8 +2930,8 @@ export function MessengerPage() {
                 top: Math.min(messageMenu.y, window.innerHeight - 360)
             }} onPointerDown={(event) => event.stopPropagation()}>
           {[
-                { label: "Reply", icon: <Reply size={17}/>, action: () => { setReplyingTo(messageMenu.message); setMessageMenu(null); } },
-                { label: "Forward", icon: <Forward size={17}/>, action: () => { setReplyingTo(messageMenu.message); setMessageMenu(null); } },
+                { label: "Reply", icon: <Reply size={17}/>, action: () => { setEditingMessage(null); setReplyingTo(messageMenu.message); setMessageMenu(null); } },
+                { label: "Forward", icon: <Forward size={17}/>, action: () => { setEditingMessage(null); setReplyingTo(messageMenu.message); setMessageMenu(null); } },
                 { label: "Copy text", icon: <Copy size={17}/>, action: () => copyMessageText(messageMenu.message) },
                 { label: "Copy link", icon: <LinkIcon size={17}/>, action: () => copyMessageLink(messageMenu.message) },
                 ...(messageMenu.message.sender_id === user?.id && !messageMenu.message.deleted_for_everyone

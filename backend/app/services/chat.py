@@ -5,7 +5,7 @@ from app.models.conversation import Conversation
 from app.models.message import Message
 from app.repositories.chat import ChatRepository
 from app.repositories.friends import FriendRepository
-from app.schemas.chat import GroupCreate, MessageCreate
+from app.schemas.chat import GroupCreate, MessageCreate, MessageEditRequest
 
 VALID_MESSAGE_TYPES = {"text", "emoji", "sticker", "gif", "file", "image", "audio", "video", "call"}
 
@@ -51,6 +51,12 @@ class ChatService:
         if not conversation:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
         return await self.chat.list_messages_for_user(conversation_id, user_id)
+
+    async def list_messages_page(self, user_id: int, conversation_id: int, limit: int = 50, before_id: int | None = None) -> list[Message]:
+        conversation = await self.chat.get_conversation_for_user(conversation_id, user_id)
+        if not conversation:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+        return await self.chat.list_messages_for_user(conversation_id, user_id, limit=limit, before_id=before_id)
 
     async def create_message(self, user_id: int, conversation_id: int, payload: MessageCreate | str) -> Message:
         conversation = await self.chat.get_conversation_for_user(conversation_id, user_id)
@@ -100,6 +106,26 @@ class ChatService:
             message = await self.chat.delete_message_for_everyone(message)
         else:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid delete scope")
+        await self.session.commit()
+        await self.session.refresh(message)
+        return message
+
+    async def edit_message(self, user_id: int, message_id: int, payload: MessageEditRequest) -> Message:
+        message = await self.chat.get_message_for_user(message_id, user_id)
+        if not message:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
+        if message.sender_id != user_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the sender can edit this message")
+        if message.deleted_for_everyone_at is not None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Deleted messages cannot be edited")
+        if message.attachment_url:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Attachment messages cannot be edited")
+        if payload.message_type not in {"text", "emoji", "sticker", "gif"}:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid message type")
+        body = payload.body.strip()
+        if not body:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Message body is required")
+        message = await self.chat.update_message_body(message, body, payload.message_type)
         await self.session.commit()
         await self.session.refresh(message)
         return message
