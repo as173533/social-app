@@ -63,9 +63,9 @@ export function AppShell() {
         }
     };
     return (<div className="min-h-screen bg-[#f5f5fb]">
-      <header className="flex h-14 items-center justify-between border-b border-[#e5e5f1] bg-[#464775] px-4 text-white sm:px-5">
+      <header className="flex h-14 items-center justify-between border-b border-[#34355f] bg-[#3f4074] px-4 text-white shadow-lg shadow-slate-900/10 sm:px-5">
         <div className="flex items-center gap-3">
-          <div className="grid h-9 w-9 place-items-center rounded-md bg-[#6264a7] text-white">
+          <div className="grid h-9 w-9 place-items-center rounded-lg bg-white/15 text-white ring-1 ring-white/15">
             <MessageCircle size={21}/>
           </div>
           <div>
@@ -74,11 +74,11 @@ export function AppShell() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={() => setShowProfile(true)} className="flex h-9 items-center gap-2 rounded-md bg-white/10 px-2 text-white hover:bg-white/20" title="Profile">
+          <button onClick={() => setShowProfile(true)} className="flex h-9 items-center gap-2 rounded-lg bg-white/10 px-2 text-white ring-1 ring-white/10 hover:bg-white/20" title="Profile">
             {user?.avatar ? (<img src={imageSrc(user.avatar)} alt={user.name} className="h-6 w-6 rounded-full object-cover"/>) : (<UserRound size={18}/>)}
             <span className="hidden text-sm sm:inline">Profile</span>
           </button>
-          <button onClick={() => setShowLogoutConfirm(true)} className="grid h-9 w-9 place-items-center rounded-md bg-white/10 text-white hover:bg-white/20" title="Log out">
+          <button onClick={() => setShowLogoutConfirm(true)} className="grid h-9 w-9 place-items-center rounded-lg bg-white/10 text-white ring-1 ring-white/10 hover:bg-white/20" title="Log out">
             <LogOut size={18}/>
           </button>
         </div>

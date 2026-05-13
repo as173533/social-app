@@ -1610,7 +1610,7 @@ export function MessengerPage() {
                 <button onClick={() => setShowAudioMenu((value) => !value)} className="absolute right-0 top-0 grid h-full w-5 place-items-center rounded-r-md text-[#6264a7] hover:bg-[#ededfa]" title="Audio settings">
                   <ChevronDown size={13}/>
                 </button>
-                {showAudioMenu && (<div className="absolute right-0 top-14 z-[70] w-80 rounded-md border border-[#ddddec] bg-white p-4 text-left text-sm text-slate-700 shadow-2xl">
+                {showAudioMenu && (<div className="fixed inset-x-4 top-20 z-[90] max-h-[calc(100dvh-7rem)] overflow-y-auto rounded-md border border-[#ddddec] bg-white p-4 text-left text-sm text-slate-700 shadow-2xl sm:absolute sm:inset-x-auto sm:right-0 sm:top-14 sm:max-h-[min(70dvh,520px)] sm:w-80">
                     <p className="mb-2 font-medium">Speaker</p>
                     <label className="flex items-center gap-2">
                       <input type="radio" checked readOnly/>
@@ -1684,7 +1684,7 @@ export function MessengerPage() {
           <div className="absolute bottom-4 left-4 rounded-md bg-slate-900/60 px-2 py-1 text-xs font-medium text-white">
             {callPeer?.name ?? "Call"}
           </div>
-          <div className="absolute bottom-4 right-4 h-32 w-44 overflow-hidden rounded-lg border border-white/70 bg-[#e8f7f4] shadow-xl">
+          <div className="absolute bottom-4 right-4 h-24 w-32 overflow-hidden rounded-lg border border-white/70 bg-[#e8f7f4] shadow-xl sm:h-32 sm:w-44">
             {activeCall.call_type === "video" && localStream ? (cameraOff ? (<div className="grid h-full place-items-center text-sm font-semibold text-slate-600">Camera off</div>) : (<video ref={bindLocalVideo} muted autoPlay playsInline className="h-full w-full object-cover"/>)) : (<div className="grid h-full place-items-center">
                 <div className="grid h-16 w-16 place-items-center overflow-hidden rounded-full bg-[#c7d5e8] text-xl font-semibold text-[#123a63]">
                   {user?.avatar ? <img src={avatarSrc(user.avatar)} alt={user.name} className="h-full w-full object-cover"/> : (user?.name ?? "Y").slice(0, 1).toUpperCase()}
@@ -2079,7 +2079,7 @@ export function MessengerPage() {
                   <button type="button" onClick={() => toggleRecording("audio")} className={`grid h-9 w-8 place-items-center rounded-md sm:w-9 ${recordingKind === "audio" ? "bg-[#c4314b] text-white" : "hover:bg-[#ededfa]"}`} title="Voice message">
                     {recordingKind === "audio" ? <Square size={16}/> : <Mic size={18}/>}
                   </button>
-                  <button type="button" onClick={() => toggleRecording("video")} className={`hidden h-9 w-9 place-items-center rounded-md sm:grid ${recordingKind === "video" ? "bg-[#c4314b] text-white" : "hover:bg-[#ededfa]"}`} title="Video message">
+                  <button type="button" onClick={() => toggleRecording("video")} className={`grid h-9 w-8 place-items-center rounded-md sm:w-9 ${recordingKind === "video" ? "bg-[#c4314b] text-white" : "hover:bg-[#ededfa]"}`} title="Video message">
                     {recordingKind === "video" ? <Square size={16}/> : <Video size={18}/>}
                   </button>
                   <span className="mx-1 h-7 w-px bg-[#ddddec]"/>
@@ -2124,7 +2124,7 @@ export function MessengerPage() {
                 ? "fixed bottom-16 right-4 z-50 w-[calc(100vw-2rem)] max-w-[360px]"
                 : callMinimized
                     ? "fixed bottom-4 right-4 z-50 w-[calc(100vw-2rem)] max-w-[340px]"
-                    : "fixed inset-x-3 top-16 z-50 h-[calc(100dvh-5rem)] overflow-hidden sm:inset-x-8 lg:inset-x-[11vw] xl:inset-x-[12vw]"} style={{ transform: `translate(${callPosition.x}px, ${callPosition.y}px)` }}>
+                    : "fixed inset-x-2 bottom-16 top-[4.25rem] z-50 overflow-hidden sm:inset-x-8 sm:bottom-4 lg:inset-x-[11vw] xl:inset-x-[12vw]"} style={{ transform: `translate(${callPosition.x}px, ${callPosition.y}px)` }}>
           {callPanel}
         </div>)}
       {showGroupModal && (<div className="fixed inset-0 z-[80] grid place-items-center bg-slate-950/50 px-4">
