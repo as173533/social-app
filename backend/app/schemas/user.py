@@ -31,6 +31,7 @@ class UserPublic(BaseModel):
     avatar: str | None
     bio: str | None
     e2ee_public_key: str | None = None
+    last_seen_at: datetime | None = None
     created_at: datetime
     online: bool = False
 

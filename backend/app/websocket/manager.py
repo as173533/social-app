@@ -41,9 +41,9 @@ class ConnectionManager:
         for websocket in stale:
             self.active[user_id].discard(websocket)
 
-    async def broadcast_presence(self, user_id: int, online: bool, friend_ids: list[int]) -> None:
+    async def broadcast_presence(self, user_id: int, online: bool, friend_ids: list[int], last_seen_at: str | None = None) -> None:
         for friend_id in friend_ids:
-            await self.send_to_user(friend_id, {"type": "presence", "user_id": user_id, "online": online})
+            await self.send_to_user(friend_id, {"type": "presence", "user_id": user_id, "online": online, "last_seen_at": last_seen_at})
 
 
 chat_manager = ConnectionManager()

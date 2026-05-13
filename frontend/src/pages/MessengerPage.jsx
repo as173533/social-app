@@ -207,6 +207,8 @@ export function MessengerPage() {
     const [lastMessages, setLastMessages] = useState({});
     const [messages, setMessages] = useState([]);
     const [decryptedMessages, setDecryptedMessages] = useState({});
+    const [decryptedLastMessages, setDecryptedLastMessages] = useState({});
+    const [unreadCounts, setUnreadCounts] = useState({});
     const [mentionRecords, setMentionRecords] = useState([]);
     const [callHistory, setCallHistory] = useState([]);
     const [selected, setSelected] = useState(null);
@@ -232,6 +234,7 @@ export function MessengerPage() {
     const [noiseSuppression, setNoiseSuppression] = useState(true);
     const [showMobileDevices, setShowMobileDevices] = useState(false);
     const [typingUserId, setTypingUserId] = useState(null);
+    const [lastSeenTick, setLastSeenTick] = useState(0);
     const [composerError, setComposerError] = useState("");
     const [uploading, setUploading] = useState(false);
     const [recordingKind, setRecordingKind] = useState(null);
@@ -268,6 +271,7 @@ export function MessengerPage() {
     const messagesContainer = useRef(null);
     const messagesEnd = useRef(null);
     const typingTimer = useRef(null);
+    const typingClearTimer = useRef(null);
     const callTimeoutTimer = useRef(null);
     const callDrag = useRef(null);
     const recorder = useRef(null);
@@ -436,6 +440,10 @@ export function MessengerPage() {
         { label: "Good night", value: "🌙 Good night", icon: "🌙", keywords: "sleep bye" }
     ];
     const displayMessages = useMemo(() => messages.map((message) => decryptedMessages[message.id] ?? message), [decryptedMessages, messages]);
+    const displayLastMessages = useMemo(() => Object.fromEntries(Object.entries(lastMessages).map(([conversationId, message]) => [
+        conversationId,
+        message ? decryptedLastMessages[message.id] ?? message : message
+    ])), [decryptedLastMessages, lastMessages]);
     const mentionMessages = mentionRecords.length
         ? mentionRecords
         : displayMessages.filter((message) => user && message.sender_id !== user.id && !isEncryptedBody(message.body) && message.body.toLowerCase().includes(`@${user.name.toLowerCase()}`));
@@ -466,6 +474,22 @@ export function MessengerPage() {
         const remainingSeconds = seconds % 60;
         return `${String(minutes).padStart(2, "0")}:${String(remainingSeconds).padStart(2, "0")}`;
     };
+    const formatLastSeen = (value, tick = lastSeenTick) => {
+        void tick;
+        if (!value)
+            return "offline";
+        const seconds = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 1000));
+        if (seconds < 60)
+            return "last seen just now";
+        const minutes = Math.floor(seconds / 60);
+        if (minutes < 60)
+            return `last seen ${minutes} min ago`;
+        const hours = Math.floor(minutes / 60);
+        if (hours < 24)
+            return `last seen ${hours} hr ago`;
+        const days = Math.floor(hours / 24);
+        return `last seen ${days} day${days === 1 ? "" : "s"} ago`;
+    };
     const callDurationSeconds = (call) => Math.max(0, Math.floor((Date.now() - new Date(call.started_at).getTime()) / 1000));
     const selectedMatchesCall = (call) => {
         if (!selected || !user)
@@ -478,7 +502,7 @@ export function MessengerPage() {
         : conversation?.peer?.name ?? "Chat";
     const conversationSubtitle = (conversation) => conversation?.conversation_type === "group"
         ? `${conversation.members?.length ?? 0} members`
-        : callError || (typingUserId === conversation?.peer?.id ? "Typing..." : conversation?.peer?.online ? "Online" : "Offline");
+        : callError || (typingUserId === conversation?.peer?.id ? "Typing..." : conversation?.peer?.online ? "Online" : formatLastSeen(conversation?.peer?.last_seen_at));
     const messageSummary = (message) => {
         if (!message)
             return "";
@@ -535,6 +559,10 @@ export function MessengerPage() {
             return { conversationId: conversation.id, items: items.map(normalizeMessage) };
         }));
         setLastMessages(Object.fromEntries(conversationMessages.map(({ conversationId, items }) => [conversationId, items.length ? items[items.length - 1] : undefined])));
+        setUnreadCounts(Object.fromEntries(conversationMessages.map(({ conversationId, items }) => [
+            conversationId,
+            user ? items.filter((message) => message.sender_id !== user.id && !includesNumber(message.read_by, user.id)).length : 0
+        ])));
         if (user) {
             const mentionNeedle = `@${user.name.toLowerCase()}`;
             setMentionRecords(conversationMessages
@@ -547,6 +575,7 @@ export function MessengerPage() {
         selectedRef.current = conversation;
         selectedConversationIdRef.current = conversation.id;
         setSelected(conversation);
+        setUnreadCounts((current) => ({ ...current, [conversation.id]: 0 }));
         navigate(`/app/chat/${encodeChatId(conversation.id)}`);
     };
     const showChatView = () => {
@@ -632,8 +661,14 @@ export function MessengerPage() {
         return match ? decodeChatId(match[1]) : null;
     };
     const isOpenConversationMessage = (message) => {
-        const activeId = selectedConversationIdRef.current ?? selectedRef.current?.id ?? routeConversationIdRef.current ?? currentPathConversationId();
-        return Number(activeId) === Number(message.conversation_id);
+        const messageConversationId = Number(message.conversation_id);
+        const possibleIds = [
+            currentPathConversationId(),
+            routeConversationIdRef.current,
+            selectedConversationIdRef.current,
+            selectedRef.current?.id
+        ].filter((value) => value !== null && value !== undefined);
+        return possibleIds.some((id) => Number(id) === messageConversationId);
     };
     const refreshOpenMessages = async (conversationId) => {
         if (!conversationId || !isOpenConversationMessage({ conversation_id: conversationId }))
@@ -785,6 +820,10 @@ export function MessengerPage() {
         return () => window.clearInterval(intervalId);
     }, [activeCall?.id, activeCall?.state]);
     useEffect(() => {
+        const intervalId = window.setInterval(() => setLastSeenTick((value) => value + 1), 30000);
+        return () => window.clearInterval(intervalId);
+    }, []);
+    useEffect(() => {
         if (!activeCall || !user || activeCall.state !== "ringing" || activeCall.caller_id !== user.id) {
             if (callTimeoutTimer.current) {
                 window.clearTimeout(callTimeoutTimer.current);
@@ -877,7 +916,11 @@ export function MessengerPage() {
                         }
                         return [...current, nextMessage];
                     });
+                    setUnreadCounts((current) => ({ ...current, [nextMessage.conversation_id]: 0 }));
                     forceScrollMessagesToBottom();
+                }
+                else if (nextMessage.sender_id !== user?.id) {
+                    setUnreadCounts((current) => ({ ...current, [nextMessage.conversation_id]: (current[nextMessage.conversation_id] ?? 0) + 1 }));
                 }
                 setLastMessages((current) => ({ ...current, [nextMessage.conversation_id]: nextMessage }));
                 refreshOpenMessages(nextMessage.conversation_id).catch(() => undefined);
@@ -907,7 +950,14 @@ export function MessengerPage() {
                 }
             }
             if (payload.type === "typing") {
+                if (typingClearTimer.current) {
+                    window.clearTimeout(typingClearTimer.current);
+                    typingClearTimer.current = null;
+                }
                 setTypingUserId(payload.is_typing ? payload.user_id : null);
+                if (payload.is_typing) {
+                    typingClearTimer.current = window.setTimeout(() => setTypingUserId(null), 2500);
+                }
             }
             if (payload.type === "read") {
                 const readMessageIds = Array.isArray(payload.message_ids) ? payload.message_ids : [];
@@ -922,7 +972,25 @@ export function MessengerPage() {
                 ])));
             }
             if (payload.type === "presence") {
-                setFriends((current) => current.map((friend) => friend.user.id === payload.user_id ? { ...friend, user: { ...friend.user, online: payload.online } } : friend));
+                const applyPresence = (profile) => profile?.id === payload.user_id
+                    ? { ...profile, online: payload.online, last_seen_at: payload.last_seen_at ?? profile.last_seen_at }
+                    : profile;
+                setFriends((current) => current.map((friend) => friend.user.id === payload.user_id ? { ...friend, user: applyPresence(friend.user) } : friend));
+                setConversations((current) => current.map((conversation) => ({
+                    ...conversation,
+                    peer: applyPresence(conversation.peer),
+                    members: Array.isArray(conversation.members) ? conversation.members.map(applyPresence) : conversation.members
+                })));
+                setSelected((current) => current
+                    ? {
+                        ...current,
+                        peer: applyPresence(current.peer),
+                        members: Array.isArray(current.members) ? current.members.map(applyPresence) : current.members
+                    }
+                    : current);
+                if (!payload.online) {
+                    setTypingUserId((current) => current === payload.user_id ? null : current);
+                }
             }
         };
         const handleCallMessage = async (event) => {
@@ -1022,6 +1090,10 @@ export function MessengerPage() {
             disposed = true;
             window.clearTimeout(chatReconnectTimer);
             window.clearTimeout(callReconnectTimer);
+            if (typingClearTimer.current) {
+                window.clearTimeout(typingClearTimer.current);
+                typingClearTimer.current = null;
+            }
             chatSocket.current?.close();
             callSocket.current?.close();
             chatSocket.current = null;
@@ -1035,6 +1107,7 @@ export function MessengerPage() {
             selectedRef.current = selected;
             selectedConversationIdRef.current = selected.id;
             setDecryptedMessages({});
+            setTypingUserId(null);
             chatApi.messages(selected.id).then((items) => {
                 setMessages((current) => mergeMessageLists(current, items.map(normalizeMessage), selected.id));
             });
@@ -1065,6 +1138,25 @@ export function MessengerPage() {
             cancelled = true;
         };
     }, [decryptedMessages, messages, user]);
+    useEffect(() => {
+        if (!user)
+            return;
+        let cancelled = false;
+        const encrypted = Object.values(lastMessages).filter((message) => message && isEncryptedBody(message.body) && !decryptedLastMessages[message.id]);
+        if (!encrypted.length)
+            return;
+        Promise.all(encrypted.map((message) => decryptIncomingMessage(message, user))).then((items) => {
+            if (cancelled)
+                return;
+            const entries = items.filter(Boolean).map((message) => [message.id, normalizeMessage(message)]);
+            if (entries.length) {
+                setDecryptedLastMessages((current) => ({ ...current, ...Object.fromEntries(entries) }));
+            }
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, [decryptedLastMessages, lastMessages, user]);
     useEffect(() => {
         if (emojiTab !== "gifs" || !GIPHY_API_KEY) {
             setGiphyResults([]);
@@ -1121,6 +1213,7 @@ export function MessengerPage() {
             selectedRef.current = conversation;
             selectedConversationIdRef.current = conversation.id;
             setSelected(conversation);
+            setUnreadCounts((current) => ({ ...current, [conversation.id]: 0 }));
         }
     }, [conversations, routeConversationId, selected?.id]);
     useEffect(() => {
@@ -1134,6 +1227,7 @@ export function MessengerPage() {
             .map((message) => message.id);
         if (unreadPeerMessages.length) {
             sendSocketPayload(chatSocket.current, { type: "read", conversation_id: selected.id, message_ids: unreadPeerMessages });
+            setUnreadCounts((current) => ({ ...current, [selected.id]: 0 }));
         }
     }, [messages, selected, user]);
     useEffect(() => {
@@ -1942,8 +2036,9 @@ export function MessengerPage() {
             <h2 className="mt-6 px-1 text-sm font-semibold text-slate-500">Groups</h2>
             <div className="mt-3 space-y-2">
               {conversations.filter((conversation) => conversation.conversation_type === "group").map((conversation) => {
-                const lastMessage = lastMessages[conversation.id];
-                const unread = messageUnread(lastMessage, user?.id);
+                const lastMessage = displayLastMessages[conversation.id];
+                const unreadCount = unreadCounts[conversation.id] ?? 0;
+                const unread = unreadCount > 0 || messageUnread(lastMessage, user?.id);
                 return (<button key={conversation.id} onClick={() => selectConversation(conversation)} className="flex w-full items-center gap-3 rounded-md p-3 text-left hover:bg-[#ededfa]">
                     <span className="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-full bg-[#6264a7] font-semibold text-white">
                       {(conversation.title ?? "G").slice(0, 1).toUpperCase()}
@@ -1954,6 +2049,7 @@ export function MessengerPage() {
                         {messagePreview(lastMessage, user?.id)}
                       </span>
                     </span>
+                    {unreadCount > 0 && <span className="grid h-5 min-w-5 place-items-center rounded-full bg-[#6264a7] px-1.5 text-xs font-semibold text-white">{unreadCount}</span>}
                   </button>);
             })}
             </div>
@@ -1962,12 +2058,13 @@ export function MessengerPage() {
         <div className="mt-3 space-y-2">
           {friends.map((friend) => {
             const conversation = conversations.find((item) => item.conversation_type !== "group" && (item.peer?.id === friend.user.id || item.user1_id === friend.user.id || item.user2_id === friend.user.id));
-            const lastMessage = conversation ? lastMessages[conversation.id] : undefined;
-            const unread = messageUnread(lastMessage, user?.id);
+            const lastMessage = conversation ? displayLastMessages[conversation.id] : undefined;
+            const unreadCount = conversation ? unreadCounts[conversation.id] ?? 0 : 0;
+            const unread = unreadCount > 0 || messageUnread(lastMessage, user?.id);
             return (<button key={friend.friendship_id} onClick={() => openConversation(friend)} className="flex w-full items-center gap-3 rounded-md p-3 text-left hover:bg-[#ededfa]">
                 <span className="relative grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-full bg-[#6264a7] font-semibold text-white">
                   {friend.user.avatar ? <img src={avatarSrc(friend.user.avatar)} alt={friend.user.name} className="h-full w-full object-cover"/> : friend.user.name.slice(0, 1).toUpperCase()}
-                  <span className={`absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 border-white ${friend.user.online ? "bg-emerald-500" : "bg-slate-400"}`}/>
+                  <span className={`absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 border-white ${friend.user.online ? "bg-emerald-500" : "bg-red-500"}`}/>
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className={`block truncate ${unread ? "font-bold" : "font-medium"}`}>{friend.user.name}</span>
@@ -1975,6 +2072,7 @@ export function MessengerPage() {
                     {messagePreview(lastMessage, user?.id)}
                   </span>
                 </span>
+                {unreadCount > 0 && <span className="grid h-5 min-w-5 place-items-center rounded-full bg-[#6264a7] px-1.5 text-xs font-semibold text-white">{unreadCount}</span>}
               </button>);
         })}
         </div>
@@ -2018,7 +2116,7 @@ export function MessengerPage() {
                       </span>
                       <span>
                         <span className="block font-medium">{friend.user.name}</span>
-                        <span className="block text-xs text-slate-500">{friend.user.online ? "Online" : "Offline"}</span>
+                        <span className="block text-xs text-slate-500">{friend.user.online ? "Online" : formatLastSeen(friend.user.last_seen_at)}</span>
                       </span>
                     </button>))}
                 </div>
@@ -2026,9 +2124,12 @@ export function MessengerPage() {
             </div>
           </div>) : selected ? (<>
             <div className="flex items-center justify-between border-b border-[#ddddec] bg-white px-3 py-2 sm:px-4">
-              <div className="min-w-0">
+              <div className="flex min-w-0 items-center gap-3">
+                {selected.conversation_type !== "group" && (<span className={`h-3 w-3 shrink-0 rounded-full ${selected.peer?.online ? "bg-emerald-500" : "bg-red-500"}`}/>)}
+                <div className="min-w-0">
                 <h2 className="font-semibold">{conversationTitle(selected)}</h2>
                 <p className="truncate text-xs text-slate-500">{conversationSubtitle(selected)}</p>
+                </div>
               </div>
               <div className="flex shrink-0 gap-1 sm:gap-2">
                 {selected.conversation_type !== "group" && (<>
@@ -2225,12 +2326,20 @@ export function MessengerPage() {
         </div>
         <h2 className="mt-6 font-semibold">Conversations</h2>
         <div className="mt-3 space-y-2">
-          {conversations.map((conversation) => (<button key={conversation.id} onClick={() => selectConversation(conversation)} className="w-full rounded-md border border-[#d1d1e0] bg-white p-3 text-left text-sm hover:bg-[#ededfa]">
-              <span className="block font-medium">{conversationTitle(conversation)}</span>
-              <span className={`block truncate text-xs ${messageUnread(lastMessages[conversation.id], user?.id) ? "font-bold text-slate-900" : "text-slate-500"}`}>
-                {messagePreview(lastMessages[conversation.id], user?.id)}
-              </span>
-            </button>))}
+          {conversations.map((conversation) => {
+            const lastMessage = displayLastMessages[conversation.id];
+            const unreadCount = unreadCounts[conversation.id] ?? 0;
+            const unread = unreadCount > 0 || messageUnread(lastMessage, user?.id);
+            return (<button key={conversation.id} onClick={() => selectConversation(conversation)} className="flex w-full items-center justify-between gap-3 rounded-md border border-[#d1d1e0] bg-white p-3 text-left text-sm hover:bg-[#ededfa]">
+                <span className="min-w-0">
+                  <span className="block font-medium">{conversationTitle(conversation)}</span>
+                  <span className={`block truncate text-xs ${unread ? "font-bold text-slate-900" : "text-slate-500"}`}>
+                    {messagePreview(lastMessage, user?.id)}
+                  </span>
+                </span>
+                {unreadCount > 0 && <span className="grid h-5 min-w-5 shrink-0 place-items-center rounded-full bg-[#6264a7] px-1.5 text-xs font-semibold text-white">{unreadCount}</span>}
+              </button>);
+        })}
         </div>
         <h2 className="mt-6 font-semibold">Call devices</h2>
         <div className="mt-3">{deviceControls}</div>

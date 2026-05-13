@@ -1,7 +1,10 @@
+from datetime import UTC, datetime
+
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.db.session import AsyncSessionLocal
 from app.repositories.friends import FriendRepository
+from app.repositories.users import UserRepository
 from app.services.calls import CallService
 from app.services.chat import ChatService
 from app.schemas.chat import MessageCreate
@@ -112,7 +115,13 @@ async def chat_socket(websocket: WebSocket):
                             await chat_manager.send_to_user(recipient_id, event)
     except WebSocketDisconnect:
         await chat_manager.disconnect(user_id, websocket)
-        await chat_manager.broadcast_presence(user_id, False, await friend_ids_for(user_id))
+        last_seen_at = datetime.now(UTC)
+        async with AsyncSessionLocal() as session:
+            user = await UserRepository(session).get_by_id(user_id)
+            if user:
+                user.last_seen_at = last_seen_at
+                await session.commit()
+        await chat_manager.broadcast_presence(user_id, False, await friend_ids_for(user_id), last_seen_at.isoformat())
 
 
 @websocket_router.websocket("/ws/call")
