@@ -20,12 +20,12 @@ export function AppShell() {
             return;
         ensureE2EEIdentity(user, userApi.updateE2EEKey)
             .then((updated) => {
-            if (updated && updated.e2ee_public_key !== user.e2ee_public_key) {
+            if (updated && (updated.e2ee_public_key !== user.e2ee_public_key || updated.e2ee_private_key !== user.e2ee_private_key)) {
                 setAuth(updated, accessToken, refreshToken);
             }
         })
             .catch(() => undefined);
-    }, [accessToken, refreshToken, setAuth, user?.id, user?.e2ee_public_key]);
+    }, [accessToken, refreshToken, setAuth, user?.id, user?.e2ee_public_key, user?.e2ee_private_key]);
     const logout = async () => {
         if (refreshToken) {
             await authApi.logout(refreshToken).catch(() => undefined);

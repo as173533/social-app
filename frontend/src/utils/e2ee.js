@@ -92,12 +92,43 @@ function parsePublicKey(value) {
     }
 }
 
-async function getIdentity(user) {
+function parsePrivateKey(value) {
+    if (!value)
+        return null;
+    try {
+        return typeof value === "string" ? JSON.parse(value) : value;
+    }
+    catch {
+        return null;
+    }
+}
+
+function serverIdentity(user) {
+    const privateKey = parsePrivateKey(user?.e2ee_private_key);
+    const publicKey = parsePublicKey(user?.e2ee_public_key);
+    return privateKey && publicKey ? { privateKey, publicKey } : null;
+}
+
+async function validateIdentity(identity) {
+    await importPrivateKey(identity.privateKey);
+    await importPublicKey(identity.publicKey);
+    return identity;
+}
+
+async function getIdentity(user, options = {}) {
     if (!browserCrypto() || !user?.id)
         return null;
+    const backedUp = serverIdentity(user);
+    if (backedUp) {
+        await validateIdentity(backedUp);
+        writeStoredIdentity(user.id, backedUp);
+        return backedUp;
+    }
     const existing = readStoredIdentity(user.id);
     if (existing)
         return existing;
+    if (options.allowGenerate !== true)
+        return null;
     const identity = await generateIdentity();
     writeStoredIdentity(user.id, identity);
     return identity;
@@ -152,10 +183,13 @@ export function isEncryptedBody(body) {
 export async function ensureE2EEIdentity(user, updatePublicKey) {
     if (!user?.id || !browserCrypto())
         return null;
-    const identity = await getIdentity(user);
+    const identity = await getIdentity(user, { allowGenerate: true });
+    if (!identity)
+        return user;
     const publicValue = publicKeyString(identity.publicKey);
-    if (user.e2ee_public_key !== publicValue) {
-        return updatePublicKey(publicValue);
+    const privateValue = JSON.stringify(identity.privateKey);
+    if (user.e2ee_public_key !== publicValue || user.e2ee_private_key !== privateValue) {
+        return updatePublicKey(publicValue, privateValue);
     }
     return user;
 }
@@ -168,6 +202,8 @@ export async function encryptOutgoingMessage(conversation, user, payload) {
     if (!browserCrypto() || !user?.id)
         return payload;
     const identity = await getIdentity(user);
+    if (!identity)
+        return payload;
     const senderPublic = identity.publicKey;
     const participants = conversationParticipants(conversation, { ...user, e2ee_public_key: publicKeyString(senderPublic) })
         .map((participant) => Number(participant.id) === Number(user.id) ? { ...participant, e2ee_public_key: publicKeyString(senderPublic) } : participant);
@@ -214,11 +250,11 @@ export async function encryptOutgoingMessage(conversation, user, payload) {
 export async function decryptIncomingMessage(message, user) {
     if (!isEncryptedBody(message?.body) || !browserCrypto() || !user?.id)
         return null;
-    const identity = readStoredIdentity(user.id);
+    const identity = await getIdentity(user);
     if (!identity)
         return {
             ...message,
-            body: "Encrypted message. Import your recovery key on this device to read it.",
+            body: "Encrypted message. Open Profile > Encryption and import your recovery key on this device.",
             message_type: "text",
             attachment_name: null,
             attachment_mime: null,
@@ -247,7 +283,7 @@ export async function decryptIncomingMessage(message, user) {
     catch {
         return {
             ...message,
-            body: "Encrypted message could not be decrypted on this device.",
+            body: "Older encrypted message needs the recovery key from the original device.",
             message_type: "text",
             attachment_name: null,
             attachment_mime: null,
@@ -290,5 +326,5 @@ export async function importE2EERecoveryKey(user, file, updatePublicKey) {
     await importPublicKey(bundle.public_key);
     const identity = { privateKey: bundle.private_key, publicKey: bundle.public_key };
     writeStoredIdentity(user.id, identity);
-    return updatePublicKey(publicKeyString(identity.publicKey));
+    return updatePublicKey(publicKeyString(identity.publicKey), JSON.stringify(identity.privateKey));
 }

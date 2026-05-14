@@ -21,6 +21,7 @@ class UserUpdate(BaseModel):
 
 class UserE2EEKeyUpdate(BaseModel):
     e2ee_public_key: str = Field(min_length=20, max_length=10000)
+    e2ee_private_key: str | None = Field(default=None, min_length=20, max_length=10000)
 
 
 class UserPublic(BaseModel):
@@ -36,3 +37,7 @@ class UserPublic(BaseModel):
     online: bool = False
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class UserMe(UserPublic):
+    e2ee_private_key: str | None = None

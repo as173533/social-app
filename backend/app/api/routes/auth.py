@@ -14,7 +14,7 @@ from app.schemas.auth import (
     RefreshRequest,
     TokenPair,
 )
-from app.schemas.user import UserCreate, UserPublic
+from app.schemas.user import UserCreate, UserMe
 from app.services.auth import AuthService
 
 router = APIRouter()
@@ -62,6 +62,6 @@ async def reset_password(payload: PasswordResetConfirm, session: AsyncSession = 
     return MessageResponse(message="Password reset successfully")
 
 
-@router.get("/me", response_model=UserPublic)
+@router.get("/me", response_model=UserMe)
 async def me(current_user: User = Depends(get_current_user)):
     return current_user

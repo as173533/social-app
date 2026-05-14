@@ -17,8 +17,14 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column("users", sa.Column("e2ee_public_key", sa.Text(), nullable=True))
+    bind = op.get_bind()
+    existing = {column["name"] for column in sa.inspect(bind).get_columns("users")}
+    if "e2ee_public_key" not in existing:
+        op.add_column("users", sa.Column("e2ee_public_key", sa.Text(), nullable=True))
 
 
 def downgrade() -> None:
-    op.drop_column("users", "e2ee_public_key")
+    bind = op.get_bind()
+    existing = {column["name"] for column in sa.inspect(bind).get_columns("users")}
+    if "e2ee_public_key" in existing:
+        op.drop_column("users", "e2ee_public_key")
