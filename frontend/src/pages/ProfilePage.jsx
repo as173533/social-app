@@ -4,7 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { API_URL } from "../api/client";
 import { authApi, userApi } from "../api/services";
 import { useAuthStore } from "../stores/authStore";
-import { exportE2EERecoveryKey, importE2EERecoveryKey } from "../utils/e2ee";
+import { exportE2EERecoveryKey, importE2EERecoveryKey, resetE2EEIdentity } from "../utils/e2ee";
 
 export function ProfilePage() {
     const { user, accessToken, refreshToken, setAuth } = useAuthStore();
@@ -103,6 +103,22 @@ export function ProfilePage() {
             setSecurityMessage(error?.message || "Could not import this recovery key.");
         }
     };
+    const resetEncryption = async () => {
+        const confirmed = window.confirm("Old encrypted messages without a recovery key cannot be restored. Reset encryption for future messages?");
+        if (!confirmed)
+            return;
+        setSecurityMessage("");
+        try {
+            const updated = await resetE2EEIdentity(user, userApi.updateE2EEKey);
+            if (updated && accessToken && refreshToken) {
+                setAuth(updated, accessToken, refreshToken);
+            }
+            setSecurityMessage("Encryption reset. Future messages will work on this account. Old locked messages cannot be restored.");
+        }
+        catch (error) {
+            setSecurityMessage(error?.message || "Could not reset encryption.");
+        }
+    };
     const tabs = [
         { id: "profile", label: "Profile", icon: <UserRound size={17}/> },
         { id: "password", label: "Change password", icon: <KeyRound size={17}/> },
@@ -180,6 +196,9 @@ export function ProfilePage() {
                       Import recovery key
                       <input type="file" accept="application/json,.json" className="hidden" onChange={(event) => importRecoveryKey(event.target.files?.[0])}/>
                     </label>
+                    <button type="button" onClick={resetEncryption} className="rounded-md border border-[#c4314b] px-4 py-2 text-sm font-medium text-[#c4314b]">
+                      Reset encryption
+                    </button>
                   </div>
                   {securityMessage && <p className="mt-3 rounded-md bg-[#eef7f0] px-3 py-2 text-sm text-[#14532d]">{securityMessage}</p>}
                 </section>)}

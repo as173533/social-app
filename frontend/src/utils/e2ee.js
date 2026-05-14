@@ -283,7 +283,7 @@ export async function decryptIncomingMessage(message, user) {
     catch {
         return {
             ...message,
-            body: "Older encrypted message needs the recovery key from the original device.",
+            body: "This older encrypted message is unavailable because the original device key is missing.",
             message_type: "text",
             attachment_name: null,
             attachment_mime: null,
@@ -325,6 +325,14 @@ export async function importE2EERecoveryKey(user, file, updatePublicKey) {
     await importPrivateKey(bundle.private_key);
     await importPublicKey(bundle.public_key);
     const identity = { privateKey: bundle.private_key, publicKey: bundle.public_key };
+    writeStoredIdentity(user.id, identity);
+    return updatePublicKey(publicKeyString(identity.publicKey), JSON.stringify(identity.privateKey));
+}
+
+export async function resetE2EEIdentity(user, updatePublicKey) {
+    if (!user?.id || !browserCrypto())
+        throw new Error("Encryption is not available in this browser.");
+    const identity = await generateIdentity();
     writeStoredIdentity(user.id, identity);
     return updatePublicKey(publicKeyString(identity.publicKey), JSON.stringify(identity.privateKey));
 }
